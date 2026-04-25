@@ -56,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
     vtk_parser.add_argument("--no-path-distance", action="store_true")
     vtk_parser.set_defaults(func=_cmd_export_vtk)
 
+    gui_parser = subparsers.add_parser("gui", help="launch the Qt workbench")
+    gui_parser.set_defaults(func=_cmd_gui)
+
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)
 
@@ -125,6 +128,12 @@ def _cmd_export_vtk(args: argparse.Namespace) -> int:
     )
     print(f"wrote {args.output}")
     return 0
+
+
+def _cmd_gui(_: argparse.Namespace) -> int:
+    from rt_filter.gui.app import main as gui_main
+
+    return gui_main()
 
 
 def _parse_params(items: list[str]) -> dict[str, Any]:

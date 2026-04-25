@@ -44,6 +44,13 @@ rt-filter catalog
 rt-filter batch examples/batch_config.yaml
 ```
 
+真实 TRANSIC 轨迹示例：
+
+```powershell
+python scripts\prepare_transic_ref_data.py
+rt-filter batch examples\transic_batch_config.yaml
+```
+
 批处理输出结构：
 
 ```text
@@ -90,6 +97,38 @@ rt-filter export-vtk input.csv outputs/trajectory.vtk --normal-axis z
 ```
 
 `.vtu` 为 VTK XML 格式，`.vtk` 为 legacy ASCII 格式。点数据中包含 `Normals`、`XAxis`、`YAxis`、`ZAxis`、`SampleIndex`、可选 `Timestamp` 和 `PathDistance`，可直接在 ParaView 中按法向或三轴向量显示。
+
+## Qt 分析界面
+
+安装 GUI 依赖：
+
+```powershell
+python -m pip install -e .[gui]
+```
+
+启动界面：
+
+```powershell
+rt-filter gui
+# 或
+rt-filter-gui
+```
+
+界面工作流：
+
+- 选择一个或多个输入轨迹，默认会自动加载 `input/transic_*.csv`
+- 在滤波表中勾选算法，参数用 JSON 写法，列表值会展开成参数网格
+- 运行后查看指标表、维度结论和曲线图
+- 结果会写入 `outputs/gui/run_YYYYMMDD_HHMMSS`
+- `Generate ParaView Script` 会写出 `paraview_compare.py`，同时引用原始和各滤波结果 `.vtu`
+
+ParaView 对比脚本运行方式：
+
+```powershell
+pvpython outputs\gui\run_YYYYMMDD_HHMMSS\paraview_compare.py
+```
+
+脚本会创建并排 RenderView，显示每条轨迹的点云，并用 `Normals` 生成箭头方向用于姿态对比。
 
 ## Python API
 
