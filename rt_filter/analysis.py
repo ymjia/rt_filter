@@ -90,7 +90,13 @@ def analyze_filters(
 
     results: list[FilterAnalysisResult] = []
     for spec in specs:
-        filtered = run_filter(spec.algorithm, raw, spec.params)
+        try:
+            filtered = run_filter(spec.algorithm, raw, spec.params)
+        except Exception as exc:
+            params_text = json.dumps(spec.params, ensure_ascii=False, sort_keys=True)
+            raise RuntimeError(
+                f"filter failed: {spec.algorithm} params={params_text}: {exc}"
+            ) from exc
         metrics = compare_filter_result(raw, filtered, reference=reference)
         dimension_metrics = compare_dimensions(raw, filtered, reference=reference)
         result = FilterAnalysisResult(spec, filtered, metrics, dimension_metrics)

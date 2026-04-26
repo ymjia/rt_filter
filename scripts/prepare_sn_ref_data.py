@@ -18,6 +18,7 @@ from rt_filter.trajectory import Trajectory
 SOURCE_ROOT = Path("ref_data/sn")
 INPUT_ROOT = Path("input/sn")
 TXT_COLUMNS = ["x", "y", "z", "xr", "yr", "zr", "time", "rate"]
+SPECIAL_CASE_FOLDERS = {"\u672c\u5730\u5b9e\u9a8c\u5ba4\u6570\u636e"}
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,11 @@ def prepare_sn_data() -> list[dict[str, Any]]:
 
     INPUT_ROOT.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
-    folders = [path for path in sorted(SOURCE_ROOT.iterdir()) if path.is_dir()]
+    folders = [
+        path
+        for path in sorted(SOURCE_ROOT.iterdir())
+        if path.is_dir() and path.name not in SPECIAL_CASE_FOLDERS
+    ]
     for folder_index, folder in enumerate(folders, start=1):
         info = _folder_info(folder.name, folder_index)
         case_dir = INPUT_ROOT / info.case_id

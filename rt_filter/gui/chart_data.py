@@ -31,3 +31,13 @@ def neighbor_mean_deviation(values: np.ndarray, window: int) -> np.ndarray:
         neighbor_sum = prefix[stop] - prefix[start] - positions[index]
         deviations[index] = positions[index] - neighbor_sum / neighbor_count
     return deviations
+
+
+def complete_neighbor_slice(count: int, window: int) -> slice:
+    """Return the sample range where both sides have a full neighbor window."""
+
+    if window < 1:
+        raise ValueError("window must be >= 1")
+    if count <= window * 2:
+        return slice(0, 0)
+    return slice(window, count - window)

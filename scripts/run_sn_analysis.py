@@ -20,6 +20,12 @@ from rt_filter.io import read_trajectory
 from rt_filter.stats import create_report
 
 from scripts.prepare_sn_ref_data import INPUT_ROOT, prepare_sn_data
+from scripts.run_local_lab_case12 import (
+    ensure_sn_case12,
+    ensure_sn_cases13_to15,
+    write_case12_motion_report,
+)
+from scripts.run_synthetic_rectangle_analysis import ensure_sn_case11
 
 
 OUTPUT_ROOT = Path("outputs/sn")
@@ -36,13 +42,18 @@ FILTERS = [
 
 def main() -> None:
     prepare_sn_data()
+    ensure_sn_case11()
+    ensure_sn_case12()
+    ensure_sn_cases13_to15()
     manifest = pd.read_csv(INPUT_ROOT / "manifest.csv")
     inputs = [Path(path) for path in manifest["input_csv"]]
+    references = _reference_map(manifest)
     run_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
     run_dir = run_batch(
         inputs,
         FILTERS,
         output_dir=OUTPUT_ROOT,
+        references=references,
         run_name=run_name,
         visualization=True,
     )
@@ -51,8 +62,22 @@ def main() -> None:
     stability_csv = run_dir / "sn_filter_stability.csv"
     _write_csv(stability_csv, stability_rows)
     write_markdown_report(run_dir, manifest, stability_rows)
+    write_case12_motion_report(run_dir, manifest)
     write_stability_plots(run_dir, pd.DataFrame(stability_rows))
     print(f"SN analysis output: {run_dir}")
+
+
+def _reference_map(manifest: pd.DataFrame) -> dict[str, Path]:
+    if "reference_csv" not in manifest.columns:
+        return {}
+    references: dict[str, Path] = {}
+    for _, row in manifest.iterrows():
+        reference = row.get("reference_csv", "")
+        if pd.isna(reference) or not str(reference).strip():
+            continue
+        input_path = Path(row["input_csv"])
+        references[input_path.stem] = Path(str(reference))
+    return references
 
 
 def build_stability_summary(run_dir: Path, manifest: pd.DataFrame) -> list[dict[str, Any]]:
@@ -116,7 +141,7 @@ def write_markdown_report(run_dir: Path, manifest: pd.DataFrame, rows: list[dict
         f"- Filtered results: {len(frame)}",
         "- Position unit: mm",
         "- Rotation assumption: XYZ Euler angles in degrees from `xr,yr,zr`",
-        "- Timestamps: generated from the `rate` column",
+        "- Timestamps: see `timestamp_source` in `input/sn/manifest.csv`",
         "",
         "## Overall Best Results",
         "",

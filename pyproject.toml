@@ -36,8 +36,9 @@ rt-filter = "rt_filter.cli:main"
 rt-filter-gui = "rt_filter.gui.app:main"
 
 [tool.setuptools.packages.find]
-include = ["rt_filter*"]
+include = ["rt_filter*", "output_alg*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["."]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rt_filter.gui.chart_data import neighbor_mean_deviation
+from rt_filter.gui.chart_data import complete_neighbor_slice, neighbor_mean_deviation
 
 
 def test_neighbor_mean_deviation_is_zero_for_centered_linear_samples():
@@ -39,3 +39,19 @@ def test_neighbor_mean_deviation_validates_shape_and_window():
         neighbor_mean_deviation(np.zeros((4, 2)), window=10)
     with pytest.raises(ValueError, match="window"):
         neighbor_mean_deviation(np.zeros((4, 3)), window=0)
+
+
+def test_complete_neighbor_slice_removes_incomplete_edge_windows():
+    values = np.arange(30)
+
+    trimmed = values[complete_neighbor_slice(len(values), window=10)]
+
+    np.testing.assert_array_equal(trimmed, np.arange(10, 20))
+
+
+def test_complete_neighbor_slice_returns_empty_when_window_does_not_fit():
+    values = np.arange(20)
+
+    trimmed = values[complete_neighbor_slice(len(values), window=10)]
+
+    assert trimmed.size == 0

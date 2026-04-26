@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 
 import numpy as np
+import pytest
 from scipy.spatial.transform import Rotation
 
 from rt_filter.analysis import analyze_filters, parse_filter_specs
@@ -55,6 +56,16 @@ def test_analyze_filters_writes_outputs(tmp_path):
         rows = list(csv.DictReader(handle))
     assert len(rows) == 2
     assert "to_raw_x_rmse" in rows[0]
+
+
+def test_analyze_filters_reports_failing_spec():
+    raw = _trajectory()
+    specs = parse_filter_specs(
+        [{"enabled": True, "algorithm": "moving_average", "params": {"process_noise": 1e-4}}]
+    )
+
+    with pytest.raises(RuntimeError, match="moving_average.*process_noise"):
+        analyze_filters(raw, specs, write_outputs=False, write_vtk=False)
 
 
 def test_write_paraview_comparison_script(tmp_path):

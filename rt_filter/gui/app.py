@@ -16,7 +16,7 @@ from rt_filter.analysis import (
 )
 from rt_filter.evaluation import trajectory_metrics
 from rt_filter.filters import available_filters
-from rt_filter.gui.chart_data import neighbor_mean_deviation
+from rt_filter.gui.chart_data import complete_neighbor_slice, neighbor_mean_deviation
 from rt_filter.io import read_trajectory
 from rt_filter.paraview_export import write_paraview_comparison_script
 from rt_filter.trajectory import Trajectory
@@ -196,9 +196,13 @@ class PlotCanvas(FigureCanvas):
                     if not _is_visible(curve_label, visible_labels):
                         continue
                     deviations = neighbor_mean_deviation(trajectory.positions, window)
-                    y = deviations[:, idx - 1]
+                    sample_slice = complete_neighbor_slice(trajectory.count, window)
+                    x = x_axis[sample_slice]
+                    y = deviations[sample_slice, idx - 1]
+                    if y.size == 0:
+                        continue
                     ax.plot(
-                        x_axis,
+                        x,
                         y,
                         label=curve_label,
                         linewidth=1.15 if label == "raw" else 0.95,
@@ -206,7 +210,7 @@ class PlotCanvas(FigureCanvas):
                         color=color,
                         alpha=0.95 if label == "raw" else 0.78,
                     )
-                    x_values.append(x_axis)
+                    x_values.append(x)
                     y_values.append(y)
             if x_values:
                 ax.axhline(0.0, color="0.45", linewidth=0.8)
@@ -755,6 +759,9 @@ class MainWindow(QMainWindow):
         combo.setCurrentText(algorithm)
         self.filter_table.setCellWidget(row, 1, combo)
         self.filter_table.setItem(row, 2, QTableWidgetItem(json.dumps(params, ensure_ascii=False)))
+        combo.currentTextChanged.connect(
+            lambda text, source=combo: self._set_filter_default_params(source, text)
+        )
 
     def _filter_rows(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -771,6 +778,19 @@ class MainWindow(QMainWindow):
                 }
             )
         return rows
+
+    def _set_filter_default_params(self, combo: QComboBox, algorithm: str) -> None:
+        info = available_filters().get(algorithm)
+        if info is None:
+            return
+        for row in range(self.filter_table.rowCount()):
+            if self.filter_table.cellWidget(row, 1) is combo:
+                self.filter_table.setItem(
+                    row,
+                    2,
+                    QTableWidgetItem(json.dumps(info.defaults, ensure_ascii=False)),
+                )
+                return
 
     def _update_detail_text(self) -> None:
         lines: list[str] = []

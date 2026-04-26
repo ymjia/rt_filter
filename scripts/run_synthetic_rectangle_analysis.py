@@ -23,7 +23,9 @@ from rt_filter.trajectory import Trajectory
 
 
 CASE10_ID = "case_10_static_robot_arm_high_base_before_or_unspecified_calibration_default_exposure"
+CASE11_ID = "case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms"
 INPUT_ROOT = Path("input/synthetic")
+SN_INPUT_ROOT = Path("input/sn")
 OUTPUT_ROOT = Path("outputs/synthetic_rectangle")
 
 FILTERS = [
@@ -76,6 +78,70 @@ def main(argv: list[str] | None = None) -> None:
     print(f"run_dir: {run_dir}")
     print(f"report_dir: {report_dir}")
     _print_top_results(run_dir / "summary.csv")
+
+
+def ensure_sn_case11(
+    *,
+    speed_mm_s: float = 100.0,
+    sample_rate_hz: float = 100.0,
+    loops: int = 10,
+    seed: int = 20260426,
+    corner_radius: float = 15.0,
+    z_center: float = 20.0,
+    z_range: float = 20.0,
+    noise_variant: str = "median",
+) -> dict[str, Any]:
+    clean, noisy, metadata = build_case(
+        speed_mm_s=speed_mm_s,
+        sample_rate_hz=sample_rate_hz,
+        loops=loops,
+        seed=seed,
+        corner_radius=corner_radius,
+        z_center=z_center,
+        z_range=z_range,
+        noise_variant=noise_variant,
+    )
+    case_dir = SN_INPUT_ROOT / CASE11_ID
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    speed_tag = _number_tag(speed_mm_s)
+    trajectory = f"{CASE11_ID}_01_rectangle_{speed_tag}mms"
+    input_csv = case_dir / f"{trajectory}.csv"
+    reference_csv = case_dir / f"{trajectory}_reference.csv"
+    metadata_path = case_dir / f"{trajectory}_metadata.json"
+    write_trajectory(noisy.copy_with(name=trajectory), input_csv)
+    write_trajectory(clean.copy_with(name=f"{trajectory}_reference"), reference_csv)
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    row = {
+        "trajectory": trajectory,
+        "case_id": CASE11_ID,
+        "case_label": "synthetic_rectangle",
+        "source_folder": "synthetic_rectangle_case10_noise",
+        "source_file": input_csv.name,
+        "source_path": str(input_csv),
+        "input_csv": str(input_csv),
+        "source_workbook": "",
+        "base": "high_base",
+        "target": "synthetic_rectangle",
+        "calibration": "before_or_unspecified_calibration",
+        "exposure": "default_exposure",
+        "added_points": False,
+        "variant_id": f"speed_{speed_tag}mms",
+        "tracker_smoothing": "synthetic",
+        "variant_note": "rounded rectangle with case10 median noise",
+        "sample_count": noisy.count,
+        "raw_row_count": noisy.count,
+        "position_unit": "mm",
+        "rotation_source": "generated yaw plus case10 rotation noise",
+        "rotation_assumption": "Generated yaw around Z with small case10 rotation noise",
+        "timestamp_source": "generated from sample_rate parameter",
+        "sample_rate_hz": sample_rate_hz,
+        "reference_csv": str(reference_csv),
+        "metadata_json": str(metadata_path),
+    }
+    _upsert_manifest_row(SN_INPUT_ROOT / "manifest.csv", row, key="trajectory")
+    return row
 
 
 def build_case(
@@ -334,6 +400,22 @@ def _print_top_results(summary_csv: Path) -> None:
     print(top.to_string(index=False))
 
 
+def _upsert_manifest_row(path: Path, row: dict[str, Any], *, key: str) -> None:
+    if path.exists():
+        frame = pd.read_csv(path)
+        frame = frame.loc[frame[key].astype(str) != str(row[key])].copy()
+        for column in row:
+            if column not in frame.columns:
+                frame[column] = ""
+        for column in frame.columns:
+            if column not in row:
+                row[column] = ""
+        frame = pd.concat([frame, pd.DataFrame([row], columns=frame.columns)], ignore_index=True)
+    else:
+        frame = pd.DataFrame([row])
+    frame.to_csv(path, index=False)
+
+
 def _number_tag(value: float) -> str:
     text = f"{value:g}"
     return text.replace(".", "p").replace("-", "m")
@@ -343,7 +425,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate and analyze a noisy synthetic rectangle trajectory.")
     parser.add_argument("--speed", type=float, default=100.0, help="Nominal XY path speed in mm/s.")
     parser.add_argument("--sample-rate", type=float, default=100.0, help="Sample rate in Hz.")
-    parser.add_argument("--loops", type=int, default=1, help="Number of rectangle loops.")
+    parser.add_argument("--loops", type=int, default=10, help="Number of rectangle loops.")
     parser.add_argument("--corner-radius", type=float, default=15.0, help="Rounded corner radius in mm.")
     parser.add_argument("--z-center", type=float, default=20.0, help="Mean clean Z value in mm.")
     parser.add_argument("--z-range", type=float, default=20.0, help="Approximate clean Z peak-to-peak range in mm.")
