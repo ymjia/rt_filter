@@ -1,0 +1,64 @@
+auto calcXYZSmooth = [&](int& groupId, Eigen::Vector3d& pos) -> bool {
+std::deque<double>& vecX = m_groupedX[groupId];
+std::deque<double>& vecY = m_groupedY[groupId];
+std::deque<double>& vecZ = m_groupedZ[groupId];
+vecX.push_back(pos.x());
+vecY.push_back(pos.y());
+vecZ.push_back(pos.z());
+while (vecZ.size() > zSmoothSampleNum)
+{
+vecX.pop_front();
+vecY.pop_front();
+vecZ.pop_front();
+}
+
+//数量不足
+if (vecZ.size() < zSmoothSampleNum || vecZ.size() == 0)
+{
+return false;
+}
+
+double sumX = 0;
+double sumY = 0;
+double sumZ = 0;
+int coutX = 0;
+int coutY = 0;
+int coutZ = 0;
+for (auto& x : vecX)
+{
+if (std::abs(pos.x() - x) > zSmoothThreshold)
+continue;
+
+sumX += x;
+coutX++;
+}
+for (auto& y : vecY)
+{
+if (std::abs(pos.y() - y) > zSmoothThreshold)
+continue;
+
+sumY += y;
+coutY++;
+}
+for (auto& z : vecZ)
+{
+if (std::abs(pos.z() - z) > zSmoothThreshold)
+continue;
+
+sumZ += z;
+coutZ++;
+}
+
+auto avgX = sumX / coutX;
+auto newX = pos.x() - (pos.x() - avgX) / zSmoothRatio;
+auto avgY = sumY / coutY;
+auto newY = pos.y() - (pos.y() - avgY) / zSmoothRatio;
+auto avgZ = sumZ / coutZ;
+auto newZ = pos.z() - (pos.z() - avgZ) / zSmoothRatio;
+qInfo() << " after calcZSmooth num " << zSmoothSampleNum << " ratio " << zSmoothRatio
+<< " zSmoothThreshold " << zSmoothThreshold << " countZ " << coutZ
+<< " z: " << QString::number(pos.z(), 'f', 6) << " -> " << QString::number(newZ, 'f', 6);
+pos[0] = newX;
+pos[1] = newY;
+pos[2] = newZ;
+};

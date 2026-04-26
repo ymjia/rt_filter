@@ -737,12 +737,54 @@ class MainWindow(QMainWindow):
             ("savgol", {"window": [5, 9], "polyorder": 2}),
             ("exponential", {"alpha": [0.25, 0.4]}),
             ("kalman_cv", {"process_noise": 1e-4, "measurement_noise": 1e-2}),
-            ("one_euro_z", {"min_cutoff": [0.5, 0.7], "beta": 4.0, "d_cutoff": 1.0}),
+            (
+                "ukf",
+                [
+                    {
+                        "motion_model": "constant_velocity",
+                        "process_noise": 1000.0,
+                        "measurement_noise": 0.001,
+                        "initial_linear_velocity": [0.0, 0.0, 0.0],
+                        "initial_angular_velocity": [0.0, 0.0, 0.0],
+                    },
+                    {
+                        "motion_model": "constant_acceleration",
+                        "process_noise": 10000.0,
+                        "measurement_noise": 0.001,
+                        "initial_linear_velocity": [0.0, 0.0, 0.0],
+                        "initial_angular_velocity": [0.0, 0.0, 0.0],
+                    },
+                    {
+                        "motion_model": "constant_velocity",
+                        "process_noise": 100.0,
+                        "measurement_noise": 0.001,
+                        "initial_linear_velocity": [0.0, 0.0, 0.0],
+                        "initial_angular_velocity": [0.0, 0.0, 0.0],
+                    },
+                ],
+            ),
+            (
+                "one_euro_z",
+                [
+                    {
+                        "min_cutoff": 0.02,
+                        "beta": 6.0,
+                        "d_cutoff": 2.0,
+                        "derivative_deadband": 1.0,
+                    },
+                    {
+                        "min_cutoff": 0.7,
+                        "beta": 4.0,
+                        "d_cutoff": 1.0,
+                        "derivative_deadband": 0.0,
+                    },
+                ],
+            ),
         ]
         for algorithm, params in presets:
             self._add_filter_row(algorithm, params, enabled=True)
 
-    def _add_filter_row(self, algorithm: str, params: dict[str, Any], *, enabled: bool) -> None:
+    def _add_filter_row(self, algorithm: str, params: Any, *, enabled: bool) -> None:
         row = self.filter_table.rowCount()
         self.filter_table.insertRow(row)
         check = QCheckBox()

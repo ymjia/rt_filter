@@ -1,0 +1,6 @@
+[requires]
+eigen/5.0.1@local/stable
+
+[generators]
+CMakeDeps
+CMakeToolchain

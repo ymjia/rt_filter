@@ -33,7 +33,40 @@ FILTERS = [
     {"name": "savgol", "params": {"window": [9, 15, 31], "polyorder": [2]}},
     {"name": "exponential", "params": {"alpha": [0.25, 0.4, 0.6]}},
     {"name": "kalman_cv", "params": {"process_noise": [1e-4, 1e-3], "measurement_noise": [1e-2]}},
-    {"name": "one_euro_z", "params": {"min_cutoff": [0.5, 0.7], "beta": [2.0, 4.0], "d_cutoff": [1.0]}},
+    {
+        "name": "ukf",
+        "params": [
+            {
+                "motion_model": "constant_velocity",
+                "process_noise": 1000.0,
+                "measurement_noise": 0.001,
+                "initial_linear_velocity": [0.0, 0.0, 0.0],
+                "initial_angular_velocity": [0.0, 0.0, 0.0],
+            },
+            {
+                "motion_model": "constant_acceleration",
+                "process_noise": 10000.0,
+                "measurement_noise": 0.001,
+                "initial_linear_velocity": [0.0, 0.0, 0.0],
+                "initial_angular_velocity": [0.0, 0.0, 0.0],
+            },
+            {
+                "motion_model": "constant_velocity",
+                "process_noise": 100.0,
+                "measurement_noise": 0.001,
+                "initial_linear_velocity": [0.0, 0.0, 0.0],
+                "initial_angular_velocity": [0.0, 0.0, 0.0],
+            },
+        ],
+    },
+    {
+        "name": "one_euro_z",
+        "params": [
+            {"min_cutoff": 0.02, "beta": 6.0, "d_cutoff": 2.0, "derivative_deadband": 1.0},
+            {"min_cutoff": 0.02, "beta": 4.0, "d_cutoff": 2.0, "derivative_deadband": 1.0},
+            {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0, "derivative_deadband": 0.0},
+        ],
+    },
 ]
 
 

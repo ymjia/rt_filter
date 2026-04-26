@@ -129,8 +129,26 @@ def expand_parameter_grid(params: Any) -> list[dict[str, Any]]:
     if not params:
         return [{}]
     keys = list(params.keys())
-    value_lists = [value if isinstance(value, list) else [value] for value in params.values()]
+    value_lists = [_parameter_values(key, params[key]) for key in keys]
     return [dict(zip(keys, values, strict=True)) for values in itertools.product(*value_lists)]
+
+
+def _parameter_values(key: str, value: Any) -> list[Any]:
+    if isinstance(value, list) and _is_vector_parameter(key, value):
+        return [value]
+    return value if isinstance(value, list) else [value]
+
+
+def _is_vector_parameter(key: str, value: list[Any]) -> bool:
+    vector_lengths = {
+        "initial_linear_velocity": 3,
+        "initial_angular_velocity": 3,
+        "initial_velocity": 6,
+    }
+    expected = vector_lengths.get(key)
+    if expected is None or len(value) != expected:
+        return False
+    return all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
 
 
 def parameter_slug(params: dict[str, Any]) -> str:
@@ -139,9 +157,34 @@ def parameter_slug(params: dict[str, Any]) -> str:
     parts = []
     for key in sorted(params):
         value = params[key]
-        text = str(value).replace(" ", "").replace("/", "_").replace("\\", "_")
-        parts.append(f"{key}-{text}")
-    return "_".join(parts)
+        if _is_zero_vector_parameter(key, value):
+            continue
+        parts.append(f"{_slug_key(key)}-{_slug_value(value)}")
+    return "_".join(parts) if parts else "default"
+
+
+def _is_zero_vector_parameter(key: str, value: Any) -> bool:
+    if not isinstance(value, list) or not _is_vector_parameter(key, value):
+        return False
+    return all(float(item) == 0.0 for item in value)
+
+
+def _slug_key(key: str) -> str:
+    return {
+        "initial_linear_velocity": "ilv",
+        "initial_angular_velocity": "iav",
+        "initial_velocity": "iv",
+    }.get(key, key)
+
+
+def _slug_value(value: Any) -> str:
+    if isinstance(value, list):
+        return "-".join(_slug_scalar(item) for item in value)
+    return _slug_scalar(value)
+
+
+def _slug_scalar(value: Any) -> str:
+    return str(value).replace(" ", "").replace("/", "_").replace("\\", "_")
 
 
 def _visualization_options(payload: bool | dict[str, Any] | None) -> dict[str, Any]:
