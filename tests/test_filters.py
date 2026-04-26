@@ -36,8 +36,18 @@ def test_all_filters_keep_shape():
         ("savgol", {"window": 9, "polyorder": 2}),
         ("exponential", {"alpha": 0.3}),
         ("kalman_cv", {"process_noise": 1e-4, "measurement_noise": 1e-2}),
+        ("one_euro_z", {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0}),
     ]
     for name, params in specs:
         filtered = run_filter(name, traj, params)
         assert filtered.poses.shape == traj.poses.shape
         assert filtered.timestamps is not None
+
+
+def test_one_euro_z_reduces_z_noise_without_changing_xy_or_rotation():
+    traj = _noisy_static()
+    filtered = run_filter("one_euro_z", traj, {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0})
+
+    np.testing.assert_allclose(filtered.positions[:, :2], traj.positions[:, :2])
+    np.testing.assert_allclose(filtered.rotations.as_matrix(), traj.rotations.as_matrix())
+    assert filtered.positions[:, 2].std() < traj.positions[:, 2].std()

@@ -50,6 +50,16 @@ def available_filters() -> dict[str, FilterInfo]:
             description="Constant-velocity Kalman filtering for translation and relative rotation vectors.",
             defaults={"process_noise": 1e-4, "measurement_noise": 1e-2},
         ),
+        "one_euro_z": FilterInfo(
+            name="one_euro_z",
+            description="Causal One Euro adaptive low-pass filtering on Z translation only.",
+            defaults={
+                "min_cutoff": 0.7,
+                "beta": 4.0,
+                "d_cutoff": 1.0,
+                "sample_rate_hz": 80.0,
+            },
+        ),
     }
 
 
@@ -66,6 +76,7 @@ def run_filter(
         "savitzky_golay": savgol_filter_trajectory,
         "exponential": exponential_filter,
         "kalman_cv": kalman_cv_filter,
+        "one_euro_z": one_euro_z_filter,
     }
     if normalized not in registry:
         known = ", ".join(sorted(available_filters()))
@@ -182,6 +193,49 @@ def kalman_cv_filter(
     )
 
 
+def one_euro_z_filter(
+    traj: Trajectory,
+    min_cutoff: float = 0.7,
+    beta: float = 4.0,
+    d_cutoff: float = 1.0,
+    sample_rate_hz: float = 80.0,
+) -> Trajectory:
+    """Causal adaptive low-pass filter for the Z translation channel.
+
+    X/Y translation and orientation are intentionally preserved. This is useful
+    when depth noise is much larger than lateral noise, and motion lag must stay
+    low during slow turns or continuous motion.
+    """
+
+    if min_cutoff <= 0 or beta < 0 or d_cutoff <= 0 or sample_rate_hz <= 0:
+        raise ValueError(
+            "min_cutoff, d_cutoff, and sample_rate_hz must be positive; beta must be >= 0"
+        )
+
+    positions = traj.positions.copy()
+    positions[:, 2] = _one_euro_filter_1d(
+        positions[:, 2],
+        timestamps=traj.timestamps,
+        min_cutoff=min_cutoff,
+        beta=beta,
+        d_cutoff=d_cutoff,
+        sample_rate_hz=sample_rate_hz,
+    )
+    return traj.copy_with(
+        poses=make_poses(positions, traj.rotations),
+        name=f"{traj.name}__one_euro_z",
+        metadata={
+            "filter": "one_euro_z",
+            "params": {
+                "min_cutoff": min_cutoff,
+                "beta": beta,
+                "d_cutoff": d_cutoff,
+                "sample_rate_hz": sample_rate_hz,
+            },
+        },
+    )
+
+
 def _moving_average(values: ArrayLike, window: int) -> ArrayF:
     arr = np.asarray(values, dtype=float)
     if window <= 1:
@@ -204,6 +258,49 @@ def _validate_window(window: int, count: int, *, odd: bool) -> int:
     if odd and window % 2 == 0:
         window = max(1, window - 1)
     return window
+
+
+def _one_euro_filter_1d(
+    values: ArrayLike,
+    *,
+    timestamps: ArrayLike | None,
+    min_cutoff: float,
+    beta: float,
+    d_cutoff: float,
+    sample_rate_hz: float,
+) -> ArrayF:
+    measurements = np.asarray(values, dtype=float)
+    if measurements.ndim != 1:
+        raise ValueError("one euro filter values must be one-dimensional")
+    if measurements.shape[0] <= 1:
+        return measurements.copy()
+
+    result = np.empty_like(measurements)
+    result[0] = measurements[0]
+    derivative_hat = 0.0
+    if timestamps is not None:
+        time_values = np.asarray(timestamps, dtype=float)
+        if time_values.ndim != 1 or time_values.shape[0] != measurements.shape[0]:
+            raise ValueError("timestamps must be a 1-D array with the same length as values")
+        dt_values = np.diff(time_values)
+        if np.any(dt_values <= 0):
+            raise ValueError("timestamps must be strictly increasing")
+    else:
+        dt_values = np.full(measurements.shape[0] - 1, 1.0 / sample_rate_hz, dtype=float)
+
+    for idx, dt in enumerate(dt_values, start=1):
+        derivative = (measurements[idx] - measurements[idx - 1]) / dt
+        derivative_alpha = _lowpass_alpha(d_cutoff, dt)
+        derivative_hat = derivative_alpha * derivative + (1.0 - derivative_alpha) * derivative_hat
+        cutoff = min_cutoff + beta * abs(derivative_hat)
+        value_alpha = _lowpass_alpha(cutoff, dt)
+        result[idx] = value_alpha * measurements[idx] + (1.0 - value_alpha) * result[idx - 1]
+    return result
+
+
+def _lowpass_alpha(cutoff: float, dt: float) -> float:
+    tau = 1.0 / (2.0 * np.pi * cutoff)
+    return float(dt / (dt + tau))
 
 
 def _kalman_constant_velocity(

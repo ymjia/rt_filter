@@ -28,6 +28,7 @@ CSV 可使用以下任一形式：
 rt-filter filter input.csv outputs/filtered.csv --algorithm moving_average --param window=9
 rt-filter filter input.csv outputs/filtered.csv --algorithm savgol --param window=11 --param polyorder=2
 rt-filter filter input.csv outputs/filtered.csv --algorithm exponential --param alpha=0.25
+rt-filter filter input.csv outputs/filtered.csv --algorithm one_euro_z --param min_cutoff=0.7 --param beta=4.0
 ```
 
 查看可用算法：
@@ -48,6 +49,7 @@ rt-filter catalog
 | `savgol` | `window`, `polyorder`, `mode` | Savitzky-Golay 多项式平滑；较保形，能比均值滤波更好保留趋势 | 连续运动轨迹、直线/圆弧等较平滑运动、需要少滞后地降噪 | 窗口过大仍会过平滑；轨迹很短时会自动保持原样 |
 | `exponential` | `alpha` | 因果指数平滑，只使用当前和历史信息 | 在线实时滤波、不能使用未来帧的场景 | 会产生滞后；速度越高或 `alpha` 越小，位置滞后越明显 |
 | `kalman_cv` | `process_noise`, `measurement_noise`, `initial_covariance` | 常速度模型 Kalman 滤波；同时估计位置/旋转向量及其速度 | 静态或低速数据、近似匀速轨迹、需要较强抖动压制的稳定性测试 | 模型假设不适合剧烈加减速；参数过强会把真实运动当噪声 |
+| `one_euro_z` | `min_cutoff`, `beta`, `d_cutoff`, `sample_rate_hz` | Z 方向 One Euro 自适应低通；只改 Z，保留 X/Y 和姿态 | Z 噪声明显大于 X/Y、需要在线实时且减少拖影的静止或慢速转向场景 | 只处理 Z 随机噪声；`min_cutoff` 太低或 `beta` 太小仍会产生滞后 |
 
 ### `moving_average`
 
@@ -155,13 +157,36 @@ params:
   measurement_noise: [0.005, 0.01, 0.02]
 ```
 
+### `one_euro_z`
+
+`one_euro_z` 是面向当前 SN 数据现象加入的在线自适应低通滤波。它只对平移的 Z 方向做 One Euro Filter，X/Y 和旋转保持原样；当检测到 Z 方向变化速度变大时会自动提高截止频率，因此比固定系数指数滤波更不容易在连续慢速移动、转向时产生明显拖影。
+
+参数含义：
+
+- `min_cutoff`：低速或静止时的最小截止频率。越小抖动压制越强，但越容易滞后。
+- `beta`：根据速度提高截止频率的强度。越大越跟手，拖影越小，但静止抑噪会变弱。
+- `d_cutoff`：速度估计的截止频率，默认 `1.0`。
+- `sample_rate_hz`：无时间戳输入时使用的采样率，默认 `80.0`；有 `timestamp/time/t` 时会直接使用实际时间戳。
+
+推荐先试：
+
+```yaml
+name: one_euro_z
+params:
+  min_cutoff: [0.5, 0.7]
+  beta: [2.0, 4.0]
+  d_cutoff: 1.0
+```
+
+工程判断：如果主要问题是 SN 固定位置数据里 Z 抖动比 X/Y 大得多，可以优先看 `z_jerk_rms_ratio`、`to_raw_z_rmse` 和 GUI 中的 `XYZ Neighbor Mean Deviation`。实时使用时，`beta=4.0` 通常比强固定低通更适合避免慢速转向拖影。
+
 ### 选择建议
 
 | 目标 | 优先尝试 | 观察指标 |
 | --- | --- | --- |
-| 静止点云稳定性、极差/标准差压制 | `kalman_cv`, `moving_average` | `filtered_range_z`, `std_norm_ratio`, `z_std_ratio`, `to_raw_translation_rmse` |
+| 静止点云稳定性、极差/标准差压制 | `one_euro_z`, `kalman_cv`, `moving_average` | `filtered_range_z`, `std_norm_ratio`, `z_std_ratio`, `to_raw_translation_rmse` |
 | 离线运动轨迹降噪且保留形状 | `savgol` | `to_reference_translation_rmse`, `to_raw_translation_rmse`, `jerk_rms_ratio` |
-| 在线实时轻量滤波 | `exponential` | `to_raw_translation_rmse`, `to_reference_translation_rmse`, 延迟表现 |
+| 在线实时轻量滤波 | `one_euro_z`, `exponential` | `to_raw_translation_rmse`, `to_reference_translation_rmse`, 延迟表现 |
 | 快速建立基线 | `moving_average` | `acceleration_rms_ratio`, `jerk_rms_ratio`, `to_raw_translation_max` |
 | 有 Leica 或目标轨迹参考 | 多算法批量比较 | `to_reference_translation_rmse`, `reference_rmse_improvement` |
 | 无参考、只有真实采样数据 | 多算法批量比较 | `jerk_rms_ratio`, `to_raw_translation_rmse`, SN 数据看 `std_norm_ratio` |

@@ -16,6 +16,7 @@ from rt_filter.analysis import (
 )
 from rt_filter.evaluation import trajectory_metrics
 from rt_filter.filters import available_filters
+from rt_filter.gui.chart_data import neighbor_mean_deviation
 from rt_filter.io import read_trajectory
 from rt_filter.paraview_export import write_paraview_comparison_script
 from rt_filter.trajectory import Trajectory
@@ -88,47 +89,149 @@ class PlotCanvas(FigureCanvas):
         ax.set_axis_off()
         self.draw()
 
-    def plot_positions(self, raw: Trajectory, results: list[FilterAnalysisResult]) -> None:
+    def plot_positions(
+        self,
+        raw: Trajectory,
+        results: list[FilterAnalysisResult],
+        visible_labels: set[str] | None = None,
+    ) -> None:
         self.figure.clear()
         x_axis = _sample_axis(raw)
         for idx, axis in enumerate("xyz", start=1):
             ax = self.figure.add_subplot(3, 1, idx)
-            ax.plot(x_axis, raw.positions[:, idx - 1], label="raw", linewidth=1.2)
+            x_values: list[np.ndarray] = []
+            y_values: list[np.ndarray] = []
+            if _is_visible("raw", visible_labels):
+                y = raw.positions[:, idx - 1]
+                ax.plot(x_axis, y, label="raw", linewidth=1.2)
+                x_values.append(x_axis)
+                y_values.append(y)
             for result in results:
+                if not _is_visible(result.label, visible_labels):
+                    continue
+                result_axis = _sample_axis(result.trajectory)
+                y = result.trajectory.positions[:, idx - 1]
                 ax.plot(
-                    _sample_axis(result.trajectory),
-                    result.trajectory.positions[:, idx - 1],
+                    result_axis,
+                    y,
                     label=result.label,
                     linewidth=1.0,
                     alpha=0.85,
                 )
+                x_values.append(result_axis)
+                y_values.append(y)
             ax.set_ylabel(axis)
             ax.grid(True, alpha=0.25)
+            if not _set_data_limits(ax, x_values, y_values):
+                _annotate_no_visible_data(ax)
             if idx == 1:
-                ax.legend(fontsize=8, ncols=2)
+                _legend_if_needed(ax, fontsize=8, ncols=2)
         self.figure.axes[-1].set_xlabel("timestamp / sample")
         self.draw()
 
-    def plot_delta(self, raw: Trajectory, results: list[FilterAnalysisResult]) -> None:
+    def plot_delta(
+        self,
+        raw: Trajectory,
+        results: list[FilterAnalysisResult],
+        visible_labels: set[str] | None = None,
+    ) -> None:
         self.figure.clear()
         raw_axis = _sample_axis(raw)
         for idx, axis in enumerate("xyz", start=1):
             ax = self.figure.add_subplot(3, 1, idx)
+            x_values: list[np.ndarray] = []
+            y_values: list[np.ndarray] = []
             for result in results:
+                if not _is_visible(result.label, visible_labels):
+                    continue
                 count = min(raw.count, result.trajectory.count)
                 delta = result.trajectory.positions[:count, idx - 1] - raw.positions[:count, idx - 1]
                 ax.plot(raw_axis[:count], delta, label=result.label, linewidth=1.0)
-            ax.axhline(0.0, color="0.4", linewidth=0.8)
+                x_values.append(raw_axis[:count])
+                y_values.append(delta)
+            if x_values:
+                ax.axhline(0.0, color="0.4", linewidth=0.8)
+                _set_data_limits(ax, x_values, y_values)
+            else:
+                _annotate_no_visible_data(ax)
             ax.set_ylabel(f"d{axis}")
             ax.grid(True, alpha=0.25)
             if idx == 1:
-                ax.legend(fontsize=8, ncols=2)
+                _legend_if_needed(ax, fontsize=8, ncols=2)
         self.figure.axes[-1].set_xlabel("timestamp / sample")
         self.draw()
 
-    def plot_metric_bars(self, results: list[FilterAnalysisResult]) -> None:
+    def plot_neighbor_mean_deviation(
+        self,
+        raw: Trajectory,
+        results: list[FilterAnalysisResult],
+        visible_labels: set[str] | None = None,
+        windows: tuple[int, ...] = (10, 20),
+    ) -> None:
         self.figure.clear()
-        labels = [result.label for result in results]
+        series = [("raw", raw)] + [(result.label, result.trajectory) for result in results]
+        colors = [
+            "#1F1F1F",
+            "#4C78A8",
+            "#F58518",
+            "#54A24B",
+            "#B279A2",
+            "#E45756",
+            "#72B7B2",
+            "#FF9DA6",
+            "#9D755D",
+            "#BAB0AC",
+        ]
+        styles = ["-", "--", ":"]
+
+        for idx, axis in enumerate("xyz", start=1):
+            ax = self.figure.add_subplot(3, 1, idx)
+            x_values: list[np.ndarray] = []
+            y_values: list[np.ndarray] = []
+            for series_idx, (label, trajectory) in enumerate(series):
+                x_axis = _sample_axis(trajectory)
+                color = colors[series_idx % len(colors)]
+                for window_idx, window in enumerate(windows):
+                    curve_label = f"{label} w{window}"
+                    if not _is_visible(curve_label, visible_labels):
+                        continue
+                    deviations = neighbor_mean_deviation(trajectory.positions, window)
+                    y = deviations[:, idx - 1]
+                    ax.plot(
+                        x_axis,
+                        y,
+                        label=curve_label,
+                        linewidth=1.15 if label == "raw" else 0.95,
+                        linestyle=styles[window_idx % len(styles)],
+                        color=color,
+                        alpha=0.95 if label == "raw" else 0.78,
+                    )
+                    x_values.append(x_axis)
+                    y_values.append(y)
+            if x_values:
+                ax.axhline(0.0, color="0.45", linewidth=0.8)
+                _set_data_limits(ax, x_values, y_values)
+            else:
+                _annotate_no_visible_data(ax)
+            ax.set_ylabel(f"{axis} local dev")
+            ax.grid(True, alpha=0.25)
+            if idx == 1:
+                ax.set_title("XYZ deviation from neighboring-frame mean")
+                _legend_if_needed(ax, fontsize=7, ncols=2)
+        self.figure.axes[-1].set_xlabel("timestamp / sample")
+        self.draw()
+
+    def plot_metric_bars(
+        self,
+        results: list[FilterAnalysisResult],
+        visible_labels: set[str] | None = None,
+    ) -> None:
+        self.figure.clear()
+        visible_results = [result for result in results if _is_visible(result.label, visible_labels)]
+        if not visible_results:
+            self.plot_empty("No visible curves")
+            return
+        labels = [result.label for result in visible_results]
         metrics = [
             ("to_raw_translation_rmse", "offset RMSE"),
             ("acceleration_rms_ratio", "acc ratio"),
@@ -136,24 +239,36 @@ class PlotCanvas(FigureCanvas):
         ]
         for idx, (key, title) in enumerate(metrics, start=1):
             ax = self.figure.add_subplot(1, 3, idx)
-            values = [float(result.metrics.get(key, np.nan)) for result in results]
+            values = [float(result.metrics.get(key, np.nan)) for result in visible_results]
             ax.bar(range(len(values)), values, color="#4C78A8")
             ax.set_title(title)
             ax.set_xticks(range(len(labels)), labels, rotation=75, ha="right", fontsize=7)
             ax.grid(True, axis="y", alpha=0.25)
         self.draw()
 
-    def plot_dimension_ratios(self, results: list[FilterAnalysisResult]) -> None:
+    def plot_dimension_ratios(
+        self,
+        results: list[FilterAnalysisResult],
+        visible_labels: set[str] | None = None,
+    ) -> None:
         self.figure.clear()
         labels = [result.label for result in results]
-        axes = ["x", "y", "z"]
-        width = 0.25
+        axes = [
+            ("x", "X jerk ratio", "#4C78A8"),
+            ("y", "Y jerk ratio", "#F58518"),
+            ("z", "Z jerk ratio", "#54A24B"),
+        ]
+        visible_axes = [item for item in axes if _is_visible(item[1], visible_labels)]
+        if not visible_axes:
+            self.plot_empty("No visible curves")
+            return
+        width = min(0.8 / len(visible_axes), 0.25)
         x = np.arange(len(labels))
         ax = self.figure.add_subplot(111)
-        colors = ["#4C78A8", "#F58518", "#54A24B"]
-        for idx, axis in enumerate(axes):
+        for idx, (axis, label, color) in enumerate(visible_axes):
             values = [float(result.dimension_metrics[f"{axis}_jerk_rms_ratio"]) for result in results]
-            ax.bar(x + (idx - 1) * width, values, width=width, label=f"{axis.upper()} jerk ratio", color=colors[idx])
+            offset = (idx - (len(visible_axes) - 1) / 2.0) * width
+            ax.bar(x + offset, values, width=width, label=label, color=color)
         ax.set_xticks(x, labels, rotation=45, ha="right", fontsize=8)
         ax.set_ylabel("ratio")
         ax.grid(True, axis="y", alpha=0.25)
@@ -171,6 +286,8 @@ class MainWindow(QMainWindow):
         self.reference: Trajectory | None = None
         self.results: list[FilterAnalysisResult] = []
         self.run_dir: Path | None = None
+        self.curve_visibility: dict[str, bool] = {}
+        self._updating_curve_table = False
 
         self._build_actions()
         self._build_ui()
@@ -310,14 +427,38 @@ class MainWindow(QMainWindow):
             [
                 "Position XYZ",
                 "Filtered - Raw XYZ",
+                "XYZ Neighbor Mean Deviation",
                 "Metric Bars",
                 "Dimension Jerk Ratios",
             ]
         )
-        self.chart_combo.currentIndexChanged.connect(self.update_plot)
+        self.chart_combo.currentIndexChanged.connect(self._on_chart_changed)
         chart_row.addWidget(self.chart_combo)
         chart_row.addStretch(1)
         layout.addLayout(chart_row)
+
+        curve_group = QGroupBox("Curves")
+        curve_layout = QVBoxLayout(curve_group)
+        curve_buttons = QHBoxLayout()
+        show_all_button = QPushButton("Show All")
+        show_all_button.clicked.connect(self.show_all_curves)
+        curve_buttons.addWidget(show_all_button)
+        hide_all_button = QPushButton("Hide All")
+        hide_all_button.clicked.connect(self.hide_all_curves)
+        curve_buttons.addWidget(hide_all_button)
+        curve_buttons.addStretch(1)
+        curve_layout.addLayout(curve_buttons)
+        self.curve_table = QTableWidget(0, 2)
+        self.curve_table.setHorizontalHeaderLabels(["Show", "Curve"])
+        self.curve_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.curve_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.curve_table.verticalHeader().setVisible(False)
+        self.curve_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.curve_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.curve_table.setMaximumHeight(170)
+        curve_layout.addWidget(self.curve_table)
+        layout.addWidget(curve_group)
+
         self.canvas = PlotCanvas()
         self.canvas.plot_empty("No results")
         layout.addWidget(self.canvas, 1)
@@ -445,21 +586,101 @@ class MainWindow(QMainWindow):
                 self.metric_table.setItem(row, col, item)
         self.conclusion_text.setPlainText("\n".join(analysis_conclusions(self.results)))
         self._update_detail_text()
+        self._refresh_curve_table()
         self.update_plot()
 
     def update_plot(self) -> None:
         if self.raw is None or not self.results:
             self.canvas.plot_empty("No results")
+            self._refresh_curve_table()
             return
         mode = self.chart_combo.currentText()
+        visible_labels = self._visible_curve_labels()
         if mode == "Position XYZ":
-            self.canvas.plot_positions(self.raw, self.results)
+            self.canvas.plot_positions(self.raw, self.results, visible_labels)
         elif mode == "Filtered - Raw XYZ":
-            self.canvas.plot_delta(self.raw, self.results)
+            self.canvas.plot_delta(self.raw, self.results, visible_labels)
+        elif mode == "XYZ Neighbor Mean Deviation":
+            self.canvas.plot_neighbor_mean_deviation(self.raw, self.results, visible_labels)
         elif mode == "Metric Bars":
-            self.canvas.plot_metric_bars(self.results)
+            self.canvas.plot_metric_bars(self.results, visible_labels)
+        elif mode == "Dimension Jerk Ratios":
+            self.canvas.plot_dimension_ratios(self.results, visible_labels)
         else:
-            self.canvas.plot_dimension_ratios(self.results)
+            self.canvas.plot_empty("Unknown chart")
+
+    def _on_chart_changed(self) -> None:
+        self._refresh_curve_table()
+        self.update_plot()
+
+    def _current_curve_labels(self) -> list[str]:
+        if not self.results:
+            return []
+        mode = self.chart_combo.currentText()
+        if mode == "Position XYZ":
+            return ["raw"] + [result.label for result in self.results]
+        if mode == "Filtered - Raw XYZ":
+            return [result.label for result in self.results]
+        if mode == "XYZ Neighbor Mean Deviation":
+            labels: list[str] = []
+            for base_label in ["raw"] + [result.label for result in self.results]:
+                labels.extend([f"{base_label} w10", f"{base_label} w20"])
+            return labels
+        if mode == "Metric Bars":
+            return [result.label for result in self.results]
+        if mode == "Dimension Jerk Ratios":
+            return ["X jerk ratio", "Y jerk ratio", "Z jerk ratio"]
+        return []
+
+    def _visible_curve_labels(self) -> set[str]:
+        return {
+            label
+            for label in self._current_curve_labels()
+            if self.curve_visibility.get(label, True)
+        }
+
+    def _refresh_curve_table(self) -> None:
+        if not hasattr(self, "curve_table"):
+            return
+        labels = self._current_curve_labels()
+        self._updating_curve_table = True
+        self.curve_table.setRowCount(0)
+        for label in labels:
+            row = self.curve_table.rowCount()
+            self.curve_table.insertRow(row)
+
+            check = QCheckBox()
+            check.setChecked(self.curve_visibility.get(label, True))
+            check.toggled.connect(lambda checked, curve_label=label: self._set_curve_visible(curve_label, checked))
+            check_frame = QFrame()
+            check_layout = QHBoxLayout(check_frame)
+            check_layout.setContentsMargins(0, 0, 0, 0)
+            check_layout.setAlignment(Qt.AlignCenter)
+            check_layout.addWidget(check)
+            self.curve_table.setCellWidget(row, 0, check_frame)
+
+            item = QTableWidgetItem(label)
+            item.setToolTip(label)
+            self.curve_table.setItem(row, 1, item)
+        self.curve_table.setEnabled(bool(labels))
+        self._updating_curve_table = False
+
+    def _set_curve_visible(self, label: str, visible: bool) -> None:
+        self.curve_visibility[label] = visible
+        if not self._updating_curve_table:
+            self.update_plot()
+
+    def show_all_curves(self) -> None:
+        for label in self._current_curve_labels():
+            self.curve_visibility[label] = True
+        self._refresh_curve_table()
+        self.update_plot()
+
+    def hide_all_curves(self) -> None:
+        for label in self._current_curve_labels():
+            self.curve_visibility[label] = False
+        self._refresh_curve_table()
+        self.update_plot()
 
     def _append_inputs(self, paths: list[Path]) -> None:
         for path in paths:
@@ -512,6 +733,7 @@ class MainWindow(QMainWindow):
             ("savgol", {"window": [5, 9], "polyorder": 2}),
             ("exponential", {"alpha": [0.25, 0.4]}),
             ("kalman_cv", {"process_noise": 1e-4, "measurement_noise": 1e-2}),
+            ("one_euro_z", {"min_cutoff": [0.5, 0.7], "beta": 4.0, "d_cutoff": 1.0}),
         ]
         for algorithm, params in presets:
             self._add_filter_row(algorithm, params, enabled=True)
@@ -580,6 +802,51 @@ def _sample_axis(traj: Trajectory) -> np.ndarray:
     if traj.timestamps is not None:
         return traj.timestamps
     return np.arange(traj.count, dtype=float)
+
+
+def _is_visible(label: str, visible_labels: set[str] | None) -> bool:
+    return visible_labels is None or label in visible_labels
+
+
+def _set_data_limits(
+    ax: Any,
+    x_values: list[np.ndarray],
+    y_values: list[np.ndarray],
+) -> bool:
+    finite_x: list[np.ndarray] = []
+    finite_y: list[np.ndarray] = []
+    for x, y in zip(x_values, y_values, strict=False):
+        x_arr = np.asarray(x, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+        mask = np.isfinite(x_arr) & np.isfinite(y_arr)
+        if np.any(mask):
+            finite_x.append(x_arr[mask])
+            finite_y.append(y_arr[mask])
+    if not finite_x:
+        return False
+    ax.set_xlim(_padded_bounds(np.concatenate(finite_x)))
+    ax.set_ylim(_padded_bounds(np.concatenate(finite_y)))
+    return True
+
+
+def _padded_bounds(values: np.ndarray) -> tuple[float, float]:
+    low = float(np.min(values))
+    high = float(np.max(values))
+    if low == high:
+        margin = max(abs(low) * 0.05, 1e-9)
+    else:
+        margin = (high - low) * 0.05
+    return low - margin, high + margin
+
+
+def _annotate_no_visible_data(ax: Any) -> None:
+    ax.text(0.5, 0.5, "No visible curves", ha="center", va="center", transform=ax.transAxes)
+
+
+def _legend_if_needed(ax: Any, **kwargs: Any) -> None:
+    handles, labels = ax.get_legend_handles_labels()
+    if handles and labels:
+        ax.legend(**kwargs)
 
 
 def _format_cell(value: Any) -> str:

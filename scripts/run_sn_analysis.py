@@ -30,6 +30,7 @@ FILTERS = [
     {"name": "savgol", "params": {"window": [11, 31], "polyorder": [2]}},
     {"name": "exponential", "params": {"alpha": [0.15, 0.3, 0.5]}},
     {"name": "kalman_cv", "params": {"process_noise": [1e-4], "measurement_noise": [1e-2]}},
+    {"name": "one_euro_z", "params": {"min_cutoff": [0.5, 0.7], "beta": [2.0, 4.0], "d_cutoff": [1.0]}},
 ]
 
 
