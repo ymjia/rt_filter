@@ -22,9 +22,13 @@ dev = [
 ]
 data = [
   "h5py>=3.11",
+  "openpyxl>=3.1",
 ]
 gui = [
   "PySide6>=6.7",
+]
+build = [
+  "pyinstaller>=6.20",
 ]
 
 [project.scripts]

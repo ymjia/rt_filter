@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
         ref_row.addWidget(ref_button)
         form.addRow("Reference", ref_row)
 
-        self.output_edit = QLineEdit(str(Path("outputs/gui").resolve()))
+        self.output_edit = QLineEdit(str(_output_dir()))
         out_button = QPushButton("Browse")
         out_button.clicked.connect(self.choose_output_dir)
         out_row = QHBoxLayout()
@@ -327,13 +327,13 @@ class MainWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Select trajectories",
-            str(Path("input").resolve()),
+            str(_input_dir()),
             "Trajectories (*.csv *.json *.npy *.npz);;All files (*.*)",
         )
         self._append_inputs([Path(file) for file in files])
 
     def add_directory(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Select trajectory directory", str(Path("input").resolve()))
+        directory = QFileDialog.getExistingDirectory(self, "Select trajectory directory", str(_input_dir()))
         if not directory:
             return
         paths: list[Path] = []
@@ -353,7 +353,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select reference trajectory",
-            str(Path("input").resolve()),
+            str(_input_dir()),
             "Trajectories (*.csv *.json *.npy *.npz);;All files (*.*)",
         )
         if path:
@@ -590,6 +590,35 @@ def _format_cell(value: Any) -> str:
     return str(value)
 
 
+def _project_root() -> Path:
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent.parent)
+    candidates.extend([Path.cwd(), Path(__file__).resolve().parents[2]])
+    for candidate in candidates:
+        if (candidate / "input").exists() or (candidate / ".git").exists():
+            return candidate.resolve()
+    return candidates[0].resolve()
+
+
+def _input_dir() -> Path:
+    return (_project_root() / "input").resolve()
+
+
+def _output_dir() -> Path:
+    return (_project_root() / "outputs" / "gui").resolve()
+
+
+def _default_input_files() -> list[Path]:
+    root = _input_dir()
+    if not root.exists():
+        return []
+    files: list[Path] = []
+    for pattern in ("*.csv", "sn/case_*/*.csv"):
+        files.extend(root.glob(pattern))
+    return sorted({path for path in files if path.name.lower() != "manifest.csv"})
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if any(arg in {"-h", "--help"} for arg in args):
@@ -598,11 +627,18 @@ def main(argv: list[str] | None = None) -> int:
         print("Launch the Qt trajectory filtering workbench.")
         print("Install GUI dependencies with: python -m pip install -e .[gui]")
         return 0
+    if "--smoke-test" in args:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        app = QApplication([sys.argv[0]])
+        window = MainWindow()
+        window._append_inputs(_default_input_files())
+        print(f"smoke ok: inputs={window.input_table.rowCount()} filters={window.filter_table.rowCount()}")
+        window.close()
+        app.quit()
+        return 0
     app = QApplication(sys.argv)
     window = MainWindow()
-    default_inputs = sorted(Path("input").glob("transic_*.csv"))
-    if default_inputs:
-        window._append_inputs(default_inputs)
+    window._append_inputs(_default_input_files())
     window.show()
     return app.exec()
 

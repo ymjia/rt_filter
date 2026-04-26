@@ -222,7 +222,7 @@ def _expand_paths(patterns: list[str], base_dir: Path) -> list[Path]:
     for pattern in patterns:
         pattern_path = Path(pattern)
         search_pattern = str(pattern_path if pattern_path.is_absolute() else base_dir / pattern_path)
-        matches = [Path(match) for match in glob.glob(search_pattern)]
+        matches = [Path(match) for match in glob.glob(search_pattern, recursive="**" in search_pattern)]
         if matches:
             paths.extend(sorted(matches))
         else:

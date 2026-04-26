@@ -36,6 +36,138 @@ rt-filter filter input.csv outputs/filtered.csv --algorithm exponential --param 
 rt-filter catalog
 ```
 
+## 滤波算法说明
+
+当前所有滤波算法都作用在完整 6DoF 位姿轨迹上。平移部分按 `x,y,z` 处理；旋转部分不会直接线性平均四元数，而是使用 SO(3) 旋转平均、相对旋转向量或增量旋转，避免普通欧氏空间插值造成明显姿态错误。
+
+### 算法总览
+
+| 算法 | 主要参数 | 性质 | 适用场景 | 主要风险 |
+| --- | --- | --- | --- | --- |
+| `moving_average` | `window` | 居中滑动窗口平均；平移做窗口均值，姿态做 SO(3) mean | 静态点稳定性分析、低速轨迹初筛、快速看噪声量级 | 会抹平尖峰和真实动态细节；窗口大时轨迹拐角会被圆滑化 |
+| `savgol` | `window`, `polyorder`, `mode` | Savitzky-Golay 多项式平滑；较保形，能比均值滤波更好保留趋势 | 连续运动轨迹、直线/圆弧等较平滑运动、需要少滞后地降噪 | 窗口过大仍会过平滑；轨迹很短时会自动保持原样 |
+| `exponential` | `alpha` | 因果指数平滑，只使用当前和历史信息 | 在线实时滤波、不能使用未来帧的场景 | 会产生滞后；速度越高或 `alpha` 越小，位置滞后越明显 |
+| `kalman_cv` | `process_noise`, `measurement_noise`, `initial_covariance` | 常速度模型 Kalman 滤波；同时估计位置/旋转向量及其速度 | 静态或低速数据、近似匀速轨迹、需要较强抖动压制的稳定性测试 | 模型假设不适合剧烈加减速；参数过强会把真实运动当噪声 |
+
+### `moving_average`
+
+`moving_average` 是最直观的平滑方法。`window` 表示窗口长度，值越大，抖动压制越强，但轨迹细节损失也越多。当前位置使用前后邻域的样本平均，因此它不是严格在线算法。
+
+适合：
+
+- 静止采样数据的抖动范围估计
+- 快速获得一个低噪声参考曲线
+- 对比设备内置平滑开关前后的效果
+
+不适合：
+
+- 高速动态跟踪
+- 拐角、启停、变速段需要保持真实形状的轨迹
+- 对延迟或局部峰值敏感的评价
+
+推荐先试：
+
+```yaml
+name: moving_average
+params:
+  window: [5, 15, 31]
+```
+
+### `savgol`
+
+`savgol` 使用 Savitzky-Golay 多项式平滑。它不是简单平均，而是在局部窗口内拟合低阶多项式，所以通常比移动平均更能保留轨迹形状和斜率。平移直接对 `x,y,z` 做平滑；姿态先转换为相对初始姿态的旋转向量，再平滑后还原为旋转矩阵。
+
+适合：
+
+- 直线、圆弧、慢速连续运动
+- 希望降低高频噪声，同时尽量保留运动趋势
+- 对比不同窗口长度下的保形能力
+
+参数含义：
+
+- `window`：局部窗口长度，必须为正；偶数会自动调整为较小的奇数
+- `polyorder`：多项式阶数，必须小于 `window`
+- `mode`：边界处理方式，默认 `interp`
+
+推荐先试：
+
+```yaml
+name: savgol
+params:
+  window: [7, 11, 21, 31]
+  polyorder: [2]
+```
+
+注意：如果轨迹长度小于等于 `polyorder + 1`，当前实现会返回原轨迹并在 metadata 中记录 warning。
+
+### `exponential`
+
+`exponential` 是因果滤波，当前输出只依赖历史输出和当前观测。`alpha` 越大，越相信当前观测，滞后越小但降噪较弱；`alpha` 越小，平滑越强但滞后越明显。
+
+适合：
+
+- 在线实时系统
+- 只允许使用历史数据的处理链路
+- 静态或低速采样的轻量降噪
+
+不适合：
+
+- 需要离线最优保形的轨迹分析
+- 变速直线、快速启停、动态跟踪误差评价
+
+推荐先试：
+
+```yaml
+name: exponential
+params:
+  alpha: [0.15, 0.25, 0.4, 0.6]
+```
+
+工程判断：如果 `jerk_rms_ratio` 很低，但 `to_raw_translation_rmse` 和 `to_reference_translation_rmse` 明显变大，通常说明指数滤波引入了滞后。
+
+### `kalman_cv`
+
+`kalman_cv` 使用常速度模型。平移和姿态旋转向量分别进入同一种常速度 Kalman 滤波器。它通过 `process_noise` 和 `measurement_noise` 控制“相信运动模型”还是“相信观测数据”。
+
+参数含义：
+
+- `process_noise`：过程噪声。越大表示允许状态变化更快，滤波更跟手；越小表示更相信常速度模型，平滑更强。
+- `measurement_noise`：测量噪声。越大表示越不相信观测，平滑更强；越小表示更贴近原始数据。
+- `initial_covariance`：初始协方差，默认 `1.0`，通常不需要先调。
+
+适合：
+
+- 静态稳定性数据
+- 低速、近似匀速的轨迹
+- 需要明显压制随机抖动的评估
+
+不适合：
+
+- 真实运动有明显高加速度或频繁改变方向，而仍希望完整保留动态细节的场景
+- 系统误差主导、不是随机噪声主导的数据。此时 Kalman 可以让曲线更平滑，但不能证明绝对精度变好。
+
+推荐先试：
+
+```yaml
+name: kalman_cv
+params:
+  process_noise: [0.0001, 0.001]
+  measurement_noise: [0.005, 0.01, 0.02]
+```
+
+### 选择建议
+
+| 目标 | 优先尝试 | 观察指标 |
+| --- | --- | --- |
+| 静止点云稳定性、极差/标准差压制 | `kalman_cv`, `moving_average` | `filtered_range_z`, `std_norm_ratio`, `z_std_ratio`, `to_raw_translation_rmse` |
+| 离线运动轨迹降噪且保留形状 | `savgol` | `to_reference_translation_rmse`, `to_raw_translation_rmse`, `jerk_rms_ratio` |
+| 在线实时轻量滤波 | `exponential` | `to_raw_translation_rmse`, `to_reference_translation_rmse`, 延迟表现 |
+| 快速建立基线 | `moving_average` | `acceleration_rms_ratio`, `jerk_rms_ratio`, `to_raw_translation_max` |
+| 有 Leica 或目标轨迹参考 | 多算法批量比较 | `to_reference_translation_rmse`, `reference_rmse_improvement` |
+| 无参考、只有真实采样数据 | 多算法批量比较 | `jerk_rms_ratio`, `to_raw_translation_rmse`, SN 数据看 `std_norm_ratio` |
+
+当前问题背景下要特别注意：滤波主要处理随机抖动和高频噪声；如果误差主项是位置相关姿态系统误差，滤波只能让轨迹更平滑，不能从根本上消除系统偏差。因此最终选择不应只看平滑比例，还要同时看相对原始轨迹偏移和参考轨迹误差。
+
 ## 批量执行
 
 配置示例见 [examples/batch_config.yaml](examples/batch_config.yaml)。
@@ -50,6 +182,21 @@ rt-filter batch examples/batch_config.yaml
 python scripts\prepare_transic_ref_data.py
 rt-filter batch examples\transic_batch_config.yaml
 ```
+
+先临 SN 真实静态稳定性数据示例：
+
+```powershell
+python scripts\prepare_sn_ref_data.py
+rt-filter batch examples\sn_batch_config.yaml
+```
+
+生成带测试用例汇总的完整报告：
+
+```powershell
+python scripts\run_sn_analysis.py
+```
+
+`scripts\prepare_sn_ref_data.py` 会扫描 `ref_data\sn\*\track_data_*.txt`，按文件夹名解析底座、目标、标定状态、曝光、是否加点等条件，并将每条轨迹转换到 `input\sn\case_*\*.csv`。源数据中的 `x,y,z` 按 mm 处理，`xr,yr,zr` 按 XYZ 欧拉角 degree 转换为当前系统使用的齐次位姿矩阵和四元数。
 
 批处理输出结构：
 
@@ -86,6 +233,132 @@ rt-filter report outputs/run_YYYYMMDD_HHMMSS/summary.csv --metric to_reference_t
 ```
 
 如果没有 Leica 或其他参考轨迹，可以先用 `acceleration_rms`、`jerk_rms`、`to_raw_translation_rmse`、`to_raw_translation_max` 观察滤波是否过度平滑或引入明显偏移。
+
+### 评估输出字段说明
+
+评估结果会同时写入每个滤波结果目录下的 `metrics.json` 和批处理总表 `summary.csv`。`rt-filter evaluate` 输出的是同一套指标；GUI 还会额外显示分维度指标和自动结论。
+
+#### 结果文件
+
+| 文件 | 内容 | 用途 |
+| --- | --- | --- |
+| `metrics.json` | 单个“输入轨迹 + 滤波算法 + 参数”的完整指标 | 追踪单个结果细节 |
+| `summary.csv` | 所有算法、参数、输入轨迹的汇总表 | 排名、筛选、画趋势图 |
+| `manifest.json` | 批处理配置、输入、输出路径、可视化配置 | 复现实验和定位文件 |
+| `trajectory.csv` | 滤波后的轨迹 | 后续算法或人工检查 |
+| `trajectory.vtu` | 带法向点云 | ParaView 三维对比 |
+| `report/ranked_results.csv` | 按指定 metric 排序后的总表 | 找最优参数 |
+| `report/*.png` | 算法箱线图、参数趋势图 | 看参数变化趋势 |
+| `sn_filter_stability.csv` | SN 静态数据专用稳定性指标 | 比较静态抖动压制效果 |
+| `sn_report.md` | SN 测试用例级 Markdown 总结 | 快速看每个工况的推荐结果 |
+
+#### 轨迹自身指标
+
+这组字段描述滤波后轨迹本身的几何范围和动态平滑程度，字段名前缀通常是 `filtered_`。
+
+| 字段 | 含义 | 反映的性质 |
+| --- | --- | --- |
+| `filtered_sample_count` | 滤波后采样点数量 | 是否有丢点或截断 |
+| `filtered_path_length` | 相邻位置距离累计长度 | 轨迹整体运动量；静态数据中越小通常越稳定 |
+| `filtered_duration` | 时间戳跨度 | 数据时长 |
+| `filtered_sample_rate_mean` | 平均采样率 | 数据采集频率是否正常 |
+| `filtered_range_x/y/z` | x/y/z 方向最大值减最小值 | 各轴抖动或运动范围；静态稳定性里是关键指标 |
+| `filtered_velocity_rms` | 速度 RMS | 轨迹变化强度 |
+| `filtered_acceleration_rms` | 加速度 RMS | 高频抖动和运动突变程度 |
+| `filtered_jerk_rms` | jerk RMS | 更敏感的高频噪声指标；越低代表越平滑 |
+| `filtered_rotation_step_rms_deg` | 相邻姿态旋转步长 RMS | 姿态抖动程度，单位 degree |
+
+#### 相对原始轨迹的偏移指标
+
+这组字段前缀是 `to_raw_`，用于判断滤波有没有过度改变原始轨迹。
+
+| 字段 | 含义 | 反映的性质 |
+| --- | --- | --- |
+| `to_raw_translation_mean` | 滤波轨迹相对原始轨迹的位置偏移均值 | 整体偏移水平 |
+| `to_raw_translation_rmse` | 位置偏移 RMSE | 滤波引入的平均改变量；过大可能是滞后或过平滑 |
+| `to_raw_translation_max` | 最大位置偏移 | 最坏点偏离程度 |
+| `to_raw_translation_p95` | 位置偏移 95 分位 | 排除极端点后的高位偏移 |
+| `to_raw_rotation_mean_deg` | 姿态偏移均值 | 姿态整体改变量 |
+| `to_raw_rotation_rmse_deg` | 姿态偏移 RMSE | 姿态滤波强度 |
+| `to_raw_rotation_max_deg` | 最大姿态偏移 | 最坏姿态偏离 |
+
+工程判断上，`to_raw_*` 不是越小越好，而是要和降噪效果一起看：如果 `jerk_rms_ratio` 降很多但 `to_raw_translation_rmse` 很大，说明滤波可能确实平滑了噪声，但也可能引入了明显滞后或形状偏移。
+
+#### 平滑比例指标
+
+| 字段 | 定义 | 反映的性质 |
+| --- | --- | --- |
+| `acceleration_rms_ratio` | `filtered_acceleration_rms / raw_acceleration_rms` | 加速度抖动压制比例 |
+| `jerk_rms_ratio` | `filtered_jerk_rms / raw_jerk_rms` | 高频噪声压制比例 |
+
+比例小于 1 表示滤波后更平滑。静态数据中通常希望它更小；动态轨迹中要防止它过小，因为真实加减速也可能被抹掉。
+
+#### 相对参考轨迹的误差指标
+
+当提供 Leica、目标轨迹或其他参考轨迹时，会输出 `raw_to_reference_*` 和 `to_reference_*` 两组指标。前者是原始轨迹对参考的误差，后者是滤波轨迹对参考的误差。
+
+| 字段 | 含义 | 反映的性质 |
+| --- | --- | --- |
+| `raw_to_reference_translation_rmse` | 原始轨迹相对参考的位置 RMSE | 原始数据精度基线 |
+| `to_reference_translation_rmse` | 滤波轨迹相对参考的位置 RMSE | 滤波后绝对精度 |
+| `raw_to_reference_translation_max` | 原始轨迹最大位置误差 | 原始最坏点 |
+| `to_reference_translation_max` | 滤波后最大位置误差 | 滤波后最坏点 |
+| `*_translation_mean` | 平均位置误差 | 整体偏差水平 |
+| `*_translation_p95` | 位置误差 95 分位 | 稳健高位误差 |
+| `*_rotation_mean_deg` | 平均姿态误差 | 姿态平均偏差 |
+| `*_rotation_rmse_deg` | 姿态误差 RMSE | 姿态整体精度 |
+| `*_rotation_max_deg` | 最大姿态误差 | 姿态最坏点 |
+| `reference_rmse_improvement` | `raw_to_reference_translation_rmse - to_reference_translation_rmse` | 正值表示滤波让轨迹更接近参考 |
+| `reference_max_improvement` | `raw_to_reference_translation_max - to_reference_translation_max` | 正值表示最大误差改善 |
+
+如果没有参考轨迹，就不能判断绝对精度是否变好，只能判断“是否更平滑”和“是否偏离原始轨迹”。
+
+#### GUI 分维度指标
+
+GUI 的分析核心会额外输出每个方向的偏移和平滑比例，便于判断噪声是否集中在某个方向。
+
+| 字段 | 含义 | 反映的性质 |
+| --- | --- | --- |
+| `to_raw_x/y/z_mean` | 每个轴向的平均偏移 | 某一方向是否有系统性漂移 |
+| `to_raw_x/y/z_rmse` | 每个轴向的偏移 RMSE | 哪个轴被滤波改动最大 |
+| `to_raw_x/y/z_max_abs` | 每个轴最大绝对偏移 | 单轴最坏偏离 |
+| `x/y/z_acceleration_rms_ratio` | 单轴加速度 RMS 比例 | 单轴平滑效果 |
+| `x/y/z_jerk_rms_ratio` | 单轴 jerk RMS 比例 | 单轴高频噪声压制效果 |
+| `to_raw_rotation_p95_deg` | 姿态偏移 95 分位 | 稳健姿态改变量 |
+| `to_reference_x/y/z_rmse` | 单轴参考误差 RMSE | 哪个方向绝对误差较大 |
+| `raw_to_reference_x/y/z_rmse` | 原始单轴参考误差 RMSE | 单轴基线误差 |
+
+对于当前机械臂场景，如果 z 方向稳定性明显差，优先看 `to_raw_z_rmse`、`z_jerk_rms_ratio`、`to_reference_z_rmse` 或 SN 报告中的 `z_std_ratio`。
+
+#### SN 静态稳定性专用指标
+
+`scripts\run_sn_analysis.py` 会额外生成 `sn_filter_stability.csv`，把同一文件夹下的真实数据整理成测试用例，并输出更适合静态稳定性判断的字段。
+
+| 字段 | 含义 | 反映的性质 |
+| --- | --- | --- |
+| `case_id` | 由文件夹名解析出的测试用例 | 同一工况不同参数的归类键 |
+| `base` | 底座条件，如低底座、高底座、新底座 | 安装条件 |
+| `target` | 拍摄对象，如机械臂、物体 | 测试对象 |
+| `calibration` | 标定状态 | 标定变化对稳定性的影响 |
+| `exposure` | 曝光条件 | 曝光参数影响 |
+| `added_points` | 是否加点 | 标志点几何变化影响 |
+| `tracker_smoothing` | 源数据文件名里的设备平滑开关 | 设备内置平滑对比 |
+| `raw_range_x/y/z` | 原始轨迹各轴极差 | 原始静态抖动范围 |
+| `filtered_range_x/y/z` | 滤波后各轴极差 | 滤波后静态抖动范围 |
+| `raw_range_norm` | 原始三轴极差向量模长 | 综合抖动范围 |
+| `filtered_range_norm` | 滤波后三轴极差向量模长 | 综合稳定性结果 |
+| `raw_std_x/y/z` | 原始各轴标准差 | 原始随机波动强度 |
+| `filtered_std_x/y/z` | 滤波后各轴标准差 | 滤波后随机波动强度 |
+| `raw_std_norm` | 原始三轴标准差向量模长 | 综合随机抖动 |
+| `filtered_std_norm` | 滤波后三轴标准差向量模长 | 综合降噪效果 |
+| `range_norm_ratio` | `filtered_range_norm / raw_range_norm` | 综合极差压制比例 |
+| `std_norm_ratio` | `filtered_std_norm / raw_std_norm` | 综合标准差压制比例 |
+| `z_range_ratio` | `filtered_range_z / raw_range_z` | z 向极差压制比例 |
+| `z_std_ratio` | `filtered_std_z / raw_std_z` | z 向标准差压制比例 |
+| `raw_radial_p95/max` | 原始点到均值中心的径向 95 分位/最大值 | 原始空间散布程度 |
+| `filtered_radial_p95/max` | 滤波后点到均值中心的径向 95 分位/最大值 | 滤波后空间散布程度 |
+
+SN 静态数据没有外部绝对参考，因此推荐用 `filtered_range_norm`、`std_norm_ratio`、`z_std_ratio`、`to_raw_translation_rmse` 一起判断。一个结果如果 `std_norm_ratio` 很低但 `to_raw_translation_rmse` 很高，说明它压低了抖动，但也明显改变了原始点位中心或趋势。
 
 ## VTK 位姿点云导出
 
