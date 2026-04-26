@@ -17,3 +17,8 @@ target_link_libraries(output_alg_filters PUBLIC Eigen3::Eigen)
 
 add_executable(rt_filter_cpp_demo main.cpp)
 target_link_libraries(rt_filter_cpp_demo PRIVATE output_alg_filters)
+
+if(MSVC)
+    target_compile_options(output_alg_filters PUBLIC /utf-8)
+    target_compile_options(rt_filter_cpp_demo PRIVATE /utf-8)
+endif()

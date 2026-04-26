@@ -62,3 +62,41 @@ pos[0] = newX;
 pos[1] = newY;
 pos[2] = newZ;
 };
+
+// One Euro Z interface. Euler order is zyx: eulerZyx = [z, y, x], radians.
+// Put parameters and m_groupedOneEuroZFilters on the external class.
+output_alg::OneEuroZParameters oneEuroParams;
+oneEuroParams.min_cutoff = 0.02;
+oneEuroParams.beta = 6.0;
+oneEuroParams.d_cutoff = 2.0;
+oneEuroParams.derivative_deadband = 1.0;
+oneEuroParams.sample_rate_hz = 100.0;
+std::unordered_map<int, output_alg::OneEuroZRealtimeFilter> m_groupedOneEuroZFilters;
+
+auto calcOneEuroZEulerZyx = [&](int& groupId, Eigen::Vector3d& pos, Eigen::Vector3d& eulerZyx) -> bool {
+auto iter = m_groupedOneEuroZFilters.find(groupId);
+if (iter == m_groupedOneEuroZFilters.end())
+{
+iter = m_groupedOneEuroZFilters.emplace(groupId, output_alg::OneEuroZRealtimeFilter(oneEuroParams)).first;
+}
+return output_alg::FilterOneEuroZEulerZyx(iter->second, pos, eulerZyx);
+};
+
+// UKF interface. Euler order is zyx: eulerZyx = [z, y, x], radians.
+// Put parameters and m_groupedUkfFilters on the external class.
+output_alg::UkfParameters ukfParams;
+ukfParams.motion_model = "constant_velocity";
+ukfParams.process_noise = 1000.0;
+ukfParams.measurement_noise = 0.001;
+ukfParams.initial_linear_velocity = {0.0, 0.0, 0.0};
+ukfParams.initial_angular_velocity = {0.0, 0.0, 0.0};
+std::unordered_map<int, output_alg::UkfRealtimeFilter> m_groupedUkfFilters;
+
+auto calcUkfEulerZyx = [&](int& groupId, Eigen::Vector3d& pos, Eigen::Vector3d& eulerZyx) -> bool {
+auto iter = m_groupedUkfFilters.find(groupId);
+if (iter == m_groupedUkfFilters.end())
+{
+iter = m_groupedUkfFilters.emplace(groupId, output_alg::UkfRealtimeFilter(ukfParams)).first;
+}
+return output_alg::FilterUkfEulerZyx(iter->second, pos, eulerZyx);
+};

@@ -11,10 +11,11 @@ Available filters:
 
 ## OneEuroZ Realtime Filter
 
-The filter accepts homogeneous 4x4 poses and only changes the Z translation:
+The filter accepts homogeneous 4x4 poses in Python and `Sn3DAlgorithm::RigidMatrix`
+in C++. It only changes the Z translation:
 
 - Python: `pose[2, 3]`
-- C++ row-major pose array: `pose[11]`, equivalent to `m23`
+- C++: `rigid.get_translation().z()`
 
 X/Y translation and rotation are copied unchanged.
 
@@ -68,9 +69,11 @@ filtered_poses = filter_z.filter_trajectory(all_poses_4x4, timestamps)
 
 ```cpp
 #include "one_euro_z.hpp"
+#include "RigidMatrix.h"
 
 using output_alg::OneEuroZParameters;
 using output_alg::OneEuroZRealtimeFilter;
+using Sn3DAlgorithm::RigidMatrix;
 
 OneEuroZParameters params;
 params.min_cutoff = 0.02;
@@ -80,8 +83,8 @@ params.derivative_deadband = 1.0;
 params.sample_rate_hz = 100.0;
 
 OneEuroZRealtimeFilter filter(params);
-OneEuroZRealtimeFilter::Pose display_pose = filter.Update(current_pose, current_time_s);
-std::vector<OneEuroZRealtimeFilter::Pose> filtered = filter.FilterTrajectory(poses, &timestamps);
+RigidMatrix display_pose = filter.Update(current_rigid, current_time_s);
+std::vector<RigidMatrix> filtered = filter.FilterTrajectory(rigids, &timestamps);
 ```
 
 Build a C++ object file:
@@ -92,8 +95,9 @@ g++ -std=c++17 -Ioutput_alg -c output_alg/one_euro_z.cpp -o build/one_euro_z.o
 
 ## UKF Realtime Filter
 
-The UKF accepts homogeneous 4x4 poses and filters the 6D measurement
-`[x,y,z,rx,ry,rz]`. The rotation vector is relative to the first pose after
+The Python UKF accepts homogeneous 4x4 poses. The C++ UKF accepts
+`Sn3DAlgorithm::RigidMatrix`. Both filter the 6D measurement
+`[x,y,z,rx,ry,rz]`. The rotation vector is relative to the first frame after
 reset. Linear velocity units are input distance units per second, and angular
 velocity is radians per second.
 
@@ -132,6 +136,7 @@ C++ usage:
 
 ```cpp
 #include "ukf.hpp"
+#include "RigidMatrix.h"
 
 output_alg::UkfParameters params;
 params.motion_model = "constant_velocity";
@@ -141,8 +146,14 @@ params.initial_linear_velocity = {0.0, 0.0, 0.0};
 params.initial_angular_velocity = {0.0, 0.0, 0.0};
 
 output_alg::UkfRealtimeFilter filter(params);
-output_alg::UkfRealtimeFilter::Pose display_pose = filter.Update(current_pose, current_time_s);
+Sn3DAlgorithm::RigidMatrix display_pose = filter.Update(current_rigid, current_time_s);
 ```
+
+For integration code that already stores position plus Euler angles, include
+`euler_zyx_interface.hpp` and call `FilterOneEuroZEulerZyx` or
+`FilterUkfEulerZyx`. The Euler vector is `[z, y, x]` in radians, with
+`R = Rz * Ry * Rx`; the helper mutates the input position and Euler vectors
+with the filtered result.
 
 ## C++ Demo
 

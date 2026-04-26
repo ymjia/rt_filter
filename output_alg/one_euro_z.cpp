@@ -35,11 +35,11 @@ void OneEuroZRealtimeFilter::SetParameters(const OneEuroZParameters& params, boo
     }
 }
 
-OneEuroZRealtimeFilter::Pose OneEuroZRealtimeFilter::Update(
-    const Pose& pose,
+Sn3DAlgorithm::RigidMatrix OneEuroZRealtimeFilter::Update(
+    const Sn3DAlgorithm::RigidMatrix& rigid,
     std::optional<double> timestamp) {
-    Pose filtered = pose;
-    const double raw_z = pose[kZIndex];
+    Sn3DAlgorithm::RigidMatrix filtered = rigid;
+    const double raw_z = rigid.get_translation().z();
 
     if (!initialized_) {
         initialized_ = true;
@@ -47,7 +47,7 @@ OneEuroZRealtimeFilter::Pose OneEuroZRealtimeFilter::Update(
         filtered_z_ = raw_z;
         derivative_hat_ = 0.0;
         last_timestamp_ = timestamp;
-        filtered[kZIndex] = raw_z;
+        filtered.get_translation().z() = raw_z;
         PushHistory(filtered);
         return filtered;
     }
@@ -68,42 +68,42 @@ OneEuroZRealtimeFilter::Pose OneEuroZRealtimeFilter::Update(
     if (timestamp.has_value()) {
         last_timestamp_ = timestamp;
     }
-    filtered[kZIndex] = filtered_z_;
+    filtered.get_translation().z() = filtered_z_;
     PushHistory(filtered);
     return filtered;
 }
 
-std::vector<OneEuroZRealtimeFilter::Pose> OneEuroZRealtimeFilter::FilterTrajectory(
-    const std::vector<Pose>& poses,
+std::vector<Sn3DAlgorithm::RigidMatrix> OneEuroZRealtimeFilter::FilterTrajectory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps,
     bool reset) {
-    if (poses.empty()) {
-        throw std::invalid_argument("poses must contain at least one frame");
+    if (rigids.empty()) {
+        throw std::invalid_argument("rigids must contain at least one frame");
     }
-    if (timestamps != nullptr && timestamps->size() != poses.size()) {
-        throw std::invalid_argument("timestamps size must match poses size");
+    if (timestamps != nullptr && timestamps->size() != rigids.size()) {
+        throw std::invalid_argument("timestamps size must match rigids size");
     }
     if (reset) {
         Reset();
     }
 
-    std::vector<Pose> output;
-    output.reserve(poses.size());
-    for (std::size_t i = 0; i < poses.size(); ++i) {
+    std::vector<Sn3DAlgorithm::RigidMatrix> output;
+    output.reserve(rigids.size());
+    for (std::size_t i = 0; i < rigids.size(); ++i) {
         std::optional<double> timestamp = std::nullopt;
         if (timestamps != nullptr) {
             timestamp = (*timestamps)[i];
         }
-        output.push_back(Update(poses[i], timestamp));
+        output.push_back(Update(rigids[i], timestamp));
     }
     return output;
 }
 
-OneEuroZRealtimeFilter::Pose OneEuroZRealtimeFilter::FilterLatestFromHistory(
-    const std::vector<Pose>& poses,
+Sn3DAlgorithm::RigidMatrix OneEuroZRealtimeFilter::FilterLatestFromHistory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps) const {
     OneEuroZRealtimeFilter filter(params_);
-    const auto filtered = filter.FilterTrajectory(poses, timestamps, true);
+    const auto filtered = filter.FilterTrajectory(rigids, timestamps, true);
     return filtered.back();
 }
 
@@ -145,8 +145,8 @@ double OneEuroZRealtimeFilter::DeltaTime(std::optional<double> timestamp) const 
     return nominal;
 }
 
-void OneEuroZRealtimeFilter::PushHistory(const Pose& pose) {
-    history_.push_back(pose);
+void OneEuroZRealtimeFilter::PushHistory(const Sn3DAlgorithm::RigidMatrix& rigid) {
+    history_.push_back(rigid);
     if (params_.history_size > 0) {
         while (history_.size() > params_.history_size) {
             history_.pop_front();
@@ -154,20 +154,20 @@ void OneEuroZRealtimeFilter::PushHistory(const Pose& pose) {
     }
 }
 
-std::vector<OneEuroZRealtimeFilter::Pose> FilterOneEuroZTrajectory(
-    const std::vector<OneEuroZRealtimeFilter::Pose>& poses,
+std::vector<Sn3DAlgorithm::RigidMatrix> FilterOneEuroZTrajectory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps,
     OneEuroZParameters params) {
     OneEuroZRealtimeFilter filter(params);
-    return filter.FilterTrajectory(poses, timestamps, true);
+    return filter.FilterTrajectory(rigids, timestamps, true);
 }
 
-OneEuroZRealtimeFilter::Pose FilterOneEuroZLatestFromHistory(
-    const std::vector<OneEuroZRealtimeFilter::Pose>& poses,
+Sn3DAlgorithm::RigidMatrix FilterOneEuroZLatestFromHistory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps,
     OneEuroZParameters params) {
     OneEuroZRealtimeFilter filter(params);
-    return filter.FilterLatestFromHistory(poses, timestamps);
+    return filter.FilterLatestFromHistory(rigids, timestamps);
 }
 
 }  // namespace output_alg

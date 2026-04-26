@@ -46,14 +46,14 @@ void UkfRealtimeFilter::SetParameters(const UkfParameters& params, bool reset) {
     }
 }
 
-UkfRealtimeFilter::Pose UkfRealtimeFilter::Update(
-    const Pose& pose,
+Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::Update(
+    const Sn3DAlgorithm::RigidMatrix& rigid,
     std::optional<double> timestamp) {
     if (!initialized_) {
-        return Initialize(pose, timestamp);
+        return Initialize(rigid, timestamp);
     }
 
-    const Eigen::VectorXd measurement = MeasurementFromPose(pose, reference_rotation_);
+    const Eigen::VectorXd measurement = MeasurementFromRigid(rigid, reference_rotation_);
     const double dt = DeltaTime(timestamp);
     const Eigen::MatrixXd sigma_points = SigmaPoints(state_, covariance_, scale_);
 
@@ -108,42 +108,43 @@ UkfRealtimeFilter::Pose UkfRealtimeFilter::Update(
         last_timestamp_ = timestamp;
     }
 
-    Pose filtered = PoseFromMeasurement(state_.head(kMeasurementDims), reference_rotation_);
+    Sn3DAlgorithm::RigidMatrix filtered =
+        RigidFromMeasurement(state_.head(kMeasurementDims), reference_rotation_);
     PushHistory(filtered);
     return filtered;
 }
 
-std::vector<UkfRealtimeFilter::Pose> UkfRealtimeFilter::FilterTrajectory(
-    const std::vector<Pose>& poses,
+std::vector<Sn3DAlgorithm::RigidMatrix> UkfRealtimeFilter::FilterTrajectory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps,
     bool reset) {
-    if (poses.empty()) {
-        throw std::invalid_argument("poses must contain at least one frame");
+    if (rigids.empty()) {
+        throw std::invalid_argument("rigids must contain at least one frame");
     }
-    if (timestamps != nullptr && timestamps->size() != poses.size()) {
-        throw std::invalid_argument("timestamps size must match poses size");
+    if (timestamps != nullptr && timestamps->size() != rigids.size()) {
+        throw std::invalid_argument("timestamps size must match rigids size");
     }
     if (reset) {
         Reset();
     }
 
-    std::vector<Pose> output;
-    output.reserve(poses.size());
-    for (std::size_t i = 0; i < poses.size(); ++i) {
+    std::vector<Sn3DAlgorithm::RigidMatrix> output;
+    output.reserve(rigids.size());
+    for (std::size_t i = 0; i < rigids.size(); ++i) {
         std::optional<double> timestamp = std::nullopt;
         if (timestamps != nullptr) {
             timestamp = (*timestamps)[i];
         }
-        output.push_back(Update(poses[i], timestamp));
+        output.push_back(Update(rigids[i], timestamp));
     }
     return output;
 }
 
-UkfRealtimeFilter::Pose UkfRealtimeFilter::FilterLatestFromHistory(
-    const std::vector<Pose>& poses,
+Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::FilterLatestFromHistory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps) const {
     UkfRealtimeFilter filter(params_);
-    const auto filtered = filter.FilterTrajectory(poses, timestamps, true);
+    const auto filtered = filter.FilterTrajectory(rigids, timestamps, true);
     return filtered.back();
 }
 
@@ -187,49 +188,22 @@ Eigen::VectorXd UkfRealtimeFilter::InitialVelocityVector(const UkfParameters& pa
     return velocity;
 }
 
-Eigen::Matrix3d UkfRealtimeFilter::RotationFromPose(const Pose& pose) {
-    Eigen::Matrix3d rotation;
-    rotation << pose[0], pose[1], pose[2],
-        pose[4], pose[5], pose[6],
-        pose[8], pose[9], pose[10];
-    return rotation;
-}
-
-Eigen::VectorXd UkfRealtimeFilter::MeasurementFromPose(
-    const Pose& pose,
+Eigen::VectorXd UkfRealtimeFilter::MeasurementFromRigid(
+    const Sn3DAlgorithm::RigidMatrix& rigid,
     const Eigen::Matrix3d& reference) {
     Eigen::VectorXd measurement(kMeasurementDims);
-    measurement(0) = pose[3];
-    measurement(1) = pose[7];
-    measurement(2) = pose[11];
+    measurement.head<3>() = rigid.get_translation();
     measurement.segment<3>(3) =
-        RotVecFromMatrix(reference.transpose() * RotationFromPose(pose));
+        RotVecFromMatrix(reference.transpose() * rigid.get_rotation());
     return measurement;
 }
 
-UkfRealtimeFilter::Pose UkfRealtimeFilter::PoseFromMeasurement(
+Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::RigidFromMeasurement(
     const Eigen::VectorXd& measurement,
     const Eigen::Matrix3d& reference) {
-    Pose pose = {
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0};
     const Eigen::Matrix3d rotation =
         reference * MatrixFromRotVec(measurement.segment<3>(3));
-    pose[0] = rotation(0, 0);
-    pose[1] = rotation(0, 1);
-    pose[2] = rotation(0, 2);
-    pose[3] = measurement(0);
-    pose[4] = rotation(1, 0);
-    pose[5] = rotation(1, 1);
-    pose[6] = rotation(1, 2);
-    pose[7] = measurement(1);
-    pose[8] = rotation(2, 0);
-    pose[9] = rotation(2, 1);
-    pose[10] = rotation(2, 2);
-    pose[11] = measurement(2);
-    return pose;
+    return Sn3DAlgorithm::RigidMatrix(rotation, measurement.head<3>());
 }
 
 Eigen::MatrixXd UkfRealtimeFilter::SigmaPoints(
@@ -331,8 +305,8 @@ Eigen::Matrix3d UkfRealtimeFilter::MatrixFromRotVec(const Eigen::Vector3d& rotve
     return Eigen::AngleAxisd(angle, rotvec / angle).toRotationMatrix();
 }
 
-UkfRealtimeFilter::Pose UkfRealtimeFilter::Initialize(
-    const Pose& pose,
+Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::Initialize(
+    const Sn3DAlgorithm::RigidMatrix& rigid,
     std::optional<double> timestamp) {
     motion_model_ = CanonicalMotionModel(params_.motion_model);
     order_ = motion_model_ == "constant_acceleration" ? 3 : 2;
@@ -349,15 +323,15 @@ UkfRealtimeFilter::Pose UkfRealtimeFilter::Initialize(
     weights_mean_(0) = lambda / scale_;
     weights_cov_(0) = lambda / scale_ + (1.0 - params_.alpha * params_.alpha + params_.beta);
 
-    reference_rotation_ = RotationFromPose(pose);
+    reference_rotation_ = rigid.get_rotation();
     state_ = Eigen::VectorXd::Zero(state_dim);
-    state_.head(kMeasurementDims) = MeasurementFromPose(pose, reference_rotation_);
+    state_.head(kMeasurementDims) = MeasurementFromRigid(rigid, reference_rotation_);
     state_.segment(kMeasurementDims, kMeasurementDims) = InitialVelocityVector(params_);
     covariance_ = Eigen::MatrixXd::Identity(state_dim, state_dim) * params_.initial_covariance;
     last_timestamp_ = timestamp;
     initialized_ = true;
-    PushHistory(pose);
-    return pose;
+    PushHistory(rigid);
+    return rigid;
 }
 
 double UkfRealtimeFilter::DeltaTime(std::optional<double> timestamp) const {
@@ -375,8 +349,8 @@ double UkfRealtimeFilter::DeltaTime(std::optional<double> timestamp) const {
     return nominal;
 }
 
-void UkfRealtimeFilter::PushHistory(const Pose& pose) {
-    history_.push_back(pose);
+void UkfRealtimeFilter::PushHistory(const Sn3DAlgorithm::RigidMatrix& rigid) {
+    history_.push_back(rigid);
     if (params_.history_size > 0) {
         while (history_.size() > params_.history_size) {
             history_.pop_front();
@@ -384,20 +358,20 @@ void UkfRealtimeFilter::PushHistory(const Pose& pose) {
     }
 }
 
-std::vector<UkfRealtimeFilter::Pose> FilterUkfTrajectory(
-    const std::vector<UkfRealtimeFilter::Pose>& poses,
+std::vector<Sn3DAlgorithm::RigidMatrix> FilterUkfTrajectory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps,
     UkfParameters params) {
     UkfRealtimeFilter filter(params);
-    return filter.FilterTrajectory(poses, timestamps, true);
+    return filter.FilterTrajectory(rigids, timestamps, true);
 }
 
-UkfRealtimeFilter::Pose FilterUkfLatestFromHistory(
-    const std::vector<UkfRealtimeFilter::Pose>& poses,
+Sn3DAlgorithm::RigidMatrix FilterUkfLatestFromHistory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps,
     UkfParameters params) {
     UkfRealtimeFilter filter(params);
-    return filter.FilterLatestFromHistory(poses, timestamps);
+    return filter.FilterLatestFromHistory(rigids, timestamps);
 }
 
 }  // namespace output_alg
