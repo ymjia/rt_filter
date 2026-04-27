@@ -1,0 +1,46 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 23,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "macos-xcode-release",
+      "displayName": "macOS Xcode Release",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/../../build/cpp_demo/macos-xcode",
+      "toolchainFile": "${sourceDir}/../../build/cpp_demo/macos-xcode/conan_toolchain.cmake",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "windows-vs-release",
+      "displayName": "Windows Visual Studio Release",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/../../build/cpp_demo/windows-vs2022",
+      "toolchainFile": "${sourceDir}/../../build/cpp_demo/windows-vs2022/conan_toolchain.cmake",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "macos-xcode-release",
+      "configurePreset": "macos-xcode-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-vs-release",
+      "configurePreset": "windows-vs-release",
+      "configuration": "Release"
+    }
+  ]
+}

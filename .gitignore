@@ -12,3 +12,4 @@ examples/demo_data/
 examples/demo_outputs/
 outputs/
 tmp/
+.DS_Store/

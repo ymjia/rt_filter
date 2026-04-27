@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -569,13 +570,17 @@ class MainWindow(QMainWindow):
         self._update_detail_text()
 
     def open_output_dir(self) -> None:
-        path = self.run_dir or Path(self.output_edit.text().strip() or ".")
-        if sys.platform.startswith("win"):
-            os.startfile(path)  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            os.system(f"open {json.dumps(str(path))}")
-        else:
-            os.system(f"xdg-open {json.dumps(str(path))}")
+        path = (self.run_dir or Path(self.output_edit.text().strip() or ".")).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as exc:
+            QMessageBox.warning(self, "Open Failed", f"Could not open output directory:\n{path}\n{exc}")
 
     def update_results(self) -> None:
         self.metric_table.setRowCount(0)
@@ -921,31 +926,85 @@ def _format_cell(value: Any) -> str:
 
 def _project_root() -> Path:
     candidates: list[Path] = []
+    executable_path = Path(sys.executable).resolve()
     if getattr(sys, "frozen", False):
-        candidates.append(Path(sys.executable).resolve().parent.parent)
+        candidates.append(executable_path.parent)
+        if sys.platform == "darwin" and executable_path.parent.name == "MacOS":
+            candidates.append(executable_path.parents[2])
     candidates.extend([Path.cwd(), Path(__file__).resolve().parents[2]])
     for candidate in candidates:
         if (candidate / "input").exists() or (candidate / ".git").exists():
             return candidate.resolve()
+    if getattr(sys, "frozen", False):
+        return _app_data_root()
     return candidates[0].resolve()
 
 
+def _resource_root() -> Path:
+    if getattr(sys, "frozen", False):
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if bundle_root:
+            return Path(bundle_root).resolve()
+        executable_path = Path(sys.executable).resolve()
+        if sys.platform == "darwin" and executable_path.parent.name == "MacOS":
+            return (executable_path.parent.parent / "Resources").resolve()
+        return executable_path.parent.resolve()
+    return _project_root()
+
+
+def _app_data_root() -> Path:
+    if sys.platform.startswith("win"):
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return (base / "rt-filter").resolve()
+
+
+def _candidate_input_roots() -> list[Path]:
+    roots: list[Path] = []
+    for candidate in (
+        _resource_root() / "input" / "sn",
+        _project_root() / "input" / "sn",
+        _resource_root() / "input",
+        _project_root() / "input",
+        _resource_root() / "examples" / "demo_data",
+        _project_root() / "examples" / "demo_data",
+    ):
+        if candidate.exists() and candidate not in roots:
+            roots.append(candidate.resolve())
+    return roots
+
+
 def _input_dir() -> Path:
-    return (_project_root() / "input").resolve()
+    roots = _candidate_input_roots()
+    if roots:
+        return roots[0]
+    return _project_root().resolve()
 
 
 def _output_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return (_app_data_root() / "outputs" / "gui").resolve()
     return (_project_root() / "outputs" / "gui").resolve()
 
 
 def _default_input_files() -> list[Path]:
-    root = _input_dir()
-    if not root.exists():
-        return []
-    files: list[Path] = []
-    for pattern in ("*.csv", "sn/case_*/*.csv"):
-        files.extend(root.glob(pattern))
-    return sorted({path for path in files if path.name.lower() != "manifest.csv"})
+    for root in _candidate_input_roots():
+        if root.name == "sn":
+            patterns = ("case_*/*.csv",)
+        elif root.name == "demo_data":
+            patterns = ("*.csv",)
+        else:
+            patterns = ("*.csv", "sn/case_*/*.csv")
+        files: list[Path] = []
+        for pattern in patterns:
+            files.extend(root.glob(pattern))
+        files = sorted({path for path in files if path.name.lower() != "manifest.csv"})
+        if files:
+            return files
+    return []
 
 
 def main(argv: list[str] | None = None) -> int:

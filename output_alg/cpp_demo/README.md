@@ -5,27 +5,100 @@ them on a trajectory CSV. The output CSV uses the same columns as the Python
 framework (`timestamp,x,y,z,qw,qx,qy,qz,m00..m33`), so it can be read by
 `rt_filter.io.read_trajectory` and evaluated with the current tools.
 
-## Build With Conan
+## Cross-Platform Build
 
-From the repository root:
+The demo now supports both macOS and Windows through:
+
+- `output_alg/cpp_demo/CMakePresets.json`
+- `scripts/build_cpp_demo.py`
+- the local Conan workspace under `~/dev/3rd_build`
+
+`scripts/build_cpp_demo.py` first refreshes the local `eigen/5.0.1@local/stable`
+package from `3rd_build`, then runs `conan install`, `cmake configure`, and
+`cmake build` with the preset that matches the host platform.
+
+### macOS
+
+This path uses the Xcode generator and the `macos-xcode15-arm64` toolchain from
+`~/dev/3rd_build`:
+
+```bash
+python scripts/build_cpp_demo.py
+```
+
+Generated files:
+
+- Xcode project: `build/cpp_demo/macos-xcode/rt_filter_cpp_demo.xcodeproj`
+- Executable: `build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo`
+
+If you want to inspect or build manually inside Xcode:
+
+```bash
+open build/cpp_demo/macos-xcode/rt_filter_cpp_demo.xcodeproj
+```
+
+### Windows
+
+The default Windows preset uses the Visual Studio generator and the `vs2026`
+toolchain entry from `3rd_build`:
 
 ```powershell
-. F:\dev\3rd_build\scripts\use_local_conan.ps1
-conan install output_alg\cpp_demo -of build\cpp_demo -s build_type=Release --build=missing
-cmake --preset conan-default -S output_alg\cpp_demo
-cmake --build build\cpp_demo --config Release
+python scripts/build_cpp_demo.py
 ```
 
-The Conan package used by this demo is:
+If your local `3rd_build` workspace uses a different Windows toolchain, override
+it explicitly:
 
-```text
-eigen/5.0.1@local/stable
+```powershell
+python scripts/build_cpp_demo.py --third-build-toolchain vs2017
 ```
+
+Generated files:
+
+- Solution: `build/cpp_demo/windows-vs2022/rt_filter_cpp_demo.sln`
+- Executable: `build/cpp_demo/windows-vs2022/Release/rt_filter_cpp_demo.exe`
+
+### Manual Conan + CMake
+
+If you prefer manual steps, the equivalent flow is:
+
+```bash
+python ~/dev/3rd_build/scripts/thirdparty_manager.py pipeline eigen --toolchain macos-xcode15-arm64 --build-type Release
+CONAN_HOME=~/dev/3rd_build/conan_root \
+CONAN1_EXE=~/dev/3rd_build/scripts/conan1_exe.sh \
+CONAN1_USER_HOME=~/dev/3rd_build/conan_root_v1 \
+~/dev/3rd_build/.tools/conan2_venv/bin/conan install output_alg/cpp_demo \
+  -of build/cpp_demo/macos-xcode \
+  -s build_type=Release \
+  --build=missing \
+  -c tools.cmake.cmaketoolchain:generator=Xcode
+cmake --preset macos-xcode-release -S output_alg/cpp_demo
+cmake --build --preset macos-xcode-release -S output_alg/cpp_demo
+```
+
+On Windows, replace the Conan executable path, generator, preset, and
+`--toolchain` value accordingly.
 
 ## Run
 
+macOS:
+
+```bash
+build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
+  --algorithm ukf \
+  --input input/sn/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv \
+  --output outputs/cpp_demo/case11_ukf.csv \
+  --motion-model constant_velocity \
+  --process-noise 1000 \
+  --measurement-noise 0.001 \
+  --initial-linear-velocity 0,0,0 \
+  --initial-angular-velocity 0,0,0
+```
+
+Windows:
+
 ```powershell
-build\cpp_demo\Release\rt_filter_cpp_demo.exe `
+build\cpp_demo\windows-vs2022\Release\rt_filter_cpp_demo.exe `
   --algorithm ukf `
   --input input\sn\case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms\case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv `
   --output outputs\cpp_demo\case11_ukf.csv `
@@ -36,27 +109,32 @@ build\cpp_demo\Release\rt_filter_cpp_demo.exe `
   --initial-angular-velocity 0,0,0
 ```
 
-```powershell
-build\cpp_demo\Release\rt_filter_cpp_demo.exe `
-  --algorithm one_euro_z `
-  --input input\sn\case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms\case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv `
-  --output outputs\cpp_demo\case11_one_euro_z.csv `
-  --min-cutoff 0.02 `
-  --beta 6.0 `
-  --d-cutoff 2.0 `
+`one_euro_z` example:
+
+```bash
+build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
+  --algorithm one_euro_z \
+  --input input/sn/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv \
+  --output outputs/cpp_demo/case11_one_euro_z.csv \
+  --min-cutoff 0.02 \
+  --beta 6.0 \
+  --d-cutoff 2.0 \
   --derivative-deadband 1.0
 ```
 
 ## Evaluate Output
 
-```powershell
-python - <<'PY'
+```python
 from pathlib import Path
 from rt_filter.evaluation import compare_filter_result
 from rt_filter.io import read_trajectory
 
-raw = read_trajectory(Path(r"input\sn\case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms\case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv"))
-filtered = read_trajectory(Path(r"outputs\cpp_demo\case11_ukf.csv"))
+raw = read_trajectory(
+    Path(
+        "input/sn/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms/"
+        "case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv"
+    )
+)
+filtered = read_trajectory(Path("outputs/cpp_demo/case11_ukf.csv"))
 print(compare_filter_result(raw, filtered))
-PY
 ```

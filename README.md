@@ -431,21 +431,38 @@ rt-filter export-vtk input.csv outputs/trajectory.vtk --normal-axis z
 
 安装 GUI 依赖：
 
-```powershell
+```bash
 python -m pip install -e .[gui]
 ```
 
 启动界面：
 
-```powershell
+```bash
 rt-filter gui
 # 或
 rt-filter-gui
 ```
 
+构建 Windows/macOS 可执行程序：
+
+```bash
+python -m pip install -e .[gui,build]
+python scripts/build_gui.py
+```
+
+构建脚本会调用 `PyInstaller`，并自动执行一次 `--smoke-test`：
+
+- macOS 产物：`dist/rt-filter-gui.app`
+- Windows 产物：`dist/rt-filter-gui/rt-filter-gui.exe`
+
+打包后的 GUI 会优先加载仓库中的 `input/sn/` 测试用例；如果作为独立应用运行，则会优先使用打包进去的 `input/sn/`，再回退到 `examples/demo_data/`，输出目录会写到：
+
+- macOS：`~/Library/Application Support/rt-filter/outputs/gui`
+- Windows：`%LOCALAPPDATA%\\rt-filter\\outputs\\gui`
+
 界面工作流：
 
-- 选择一个或多个输入轨迹，默认会自动加载 `input/transic_*.csv`
+- 选择一个或多个输入轨迹，默认会自动加载 `input/sn/case_*/*.csv` 测试用例；独立可执行程序也会优先加载内置的 `input/sn/`
 - 在滤波表中勾选算法，参数用 JSON 写法，列表值会展开成参数网格
 - 运行后查看指标表、维度结论和曲线图
 - 结果会写入 `outputs/gui/run_YYYYMMDD_HHMMSS`
