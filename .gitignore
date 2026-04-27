@@ -11,3 +11,4 @@ build/
 examples/demo_data/
 examples/demo_outputs/
 outputs/
+tmp/

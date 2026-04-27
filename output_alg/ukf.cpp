@@ -48,7 +48,7 @@ void UkfRealtimeFilter::SetParameters(const UkfParameters& params, bool reset) {
 
 Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::Update(
     const Sn3DAlgorithm::RigidMatrix& rigid,
-    std::optional<double> timestamp) {
+    OptionalDouble timestamp) {
     if (!initialized_) {
         return Initialize(rigid, timestamp);
     }
@@ -131,11 +131,11 @@ std::vector<Sn3DAlgorithm::RigidMatrix> UkfRealtimeFilter::FilterTrajectory(
     std::vector<Sn3DAlgorithm::RigidMatrix> output;
     output.reserve(rigids.size());
     for (std::size_t i = 0; i < rigids.size(); ++i) {
-        std::optional<double> timestamp = std::nullopt;
         if (timestamps != nullptr) {
-            timestamp = (*timestamps)[i];
+            output.push_back(Update(rigids[i], (*timestamps)[i]));
+        } else {
+            output.push_back(Update(rigids[i]));
         }
-        output.push_back(Update(rigids[i], timestamp));
     }
     return output;
 }
@@ -307,7 +307,7 @@ Eigen::Matrix3d UkfRealtimeFilter::MatrixFromRotVec(const Eigen::Vector3d& rotve
 
 Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::Initialize(
     const Sn3DAlgorithm::RigidMatrix& rigid,
-    std::optional<double> timestamp) {
+    OptionalDouble timestamp) {
     motion_model_ = CanonicalMotionModel(params_.motion_model);
     order_ = motion_model_ == "constant_acceleration" ? 3 : 2;
     const int state_dim = kMeasurementDims * order_;
@@ -334,7 +334,7 @@ Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::Initialize(
     return rigid;
 }
 
-double UkfRealtimeFilter::DeltaTime(std::optional<double> timestamp) const {
+double UkfRealtimeFilter::DeltaTime(OptionalDouble timestamp) const {
     const double nominal = 1.0 / params_.sample_rate_hz;
     if (!timestamp.has_value() || !last_timestamp_.has_value()) {
         return nominal;

@@ -1,8 +1,8 @@
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cctype>
 #include <cstdlib>
-#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -10,12 +10,17 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <vector>
+
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
 
 #include <Eigen/Geometry>
 
-#include "euler_zyx_interface.hpp"
 #include "one_euro_z.hpp"
 #include "ukf.hpp"
 
@@ -33,14 +38,59 @@ struct CsvTrajectory {
 };
 
 struct Options {
-    std::filesystem::path input;
-    std::filesystem::path output;
+    std::string input;
+    std::string output;
     std::string algorithm = "ukf";
     // 滤波参数统一放在 lambda / 单帧接口外部配置。实际工程中可把这些成员
     // 放到扫描界面类或轨迹处理类里，避免每帧重复构造参数对象。
     output_alg::OneEuroZParameters one_euro;
     output_alg::UkfParameters ukf;
 };
+
+std::string DefaultOutputForAlgorithm(const std::string& algorithm) {
+    if (algorithm == "one_euro_z") {
+        return "outputs/cpp_demo/noisy_line_one_euro_z.csv";
+    }
+    return "outputs/cpp_demo/noisy_line_ukf.csv";
+}
+
+Options DefaultOptions() {
+    Options options;
+
+    // 默认输入输出用于“无命令行参数”直接运行 demo。输入文件来自当前示例数据；
+    // 输出文件仍写到 outputs/cpp_demo，便于继续用 Python 框架评估。
+    options.input = "examples/demo_data/noisy_line.csv";
+    options.algorithm = "ukf";
+    options.output = DefaultOutputForAlgorithm(options.algorithm);
+
+    // One Euro Z 当前推荐参数：偏向 SN 数据中 Z 方向静止降噪，同时保留速度自适应。
+    options.one_euro.min_cutoff = 0.02;
+    options.one_euro.beta = 6.0;
+    options.one_euro.d_cutoff = 2.0;
+    options.one_euro.derivative_deadband = 1.0;
+    options.one_euro.sample_rate_hz = 100.0;
+    options.one_euro.history_size = 0;
+    options.one_euro.strict_timestamps = false;
+
+    // UKF 当前推荐参数：匀速模型，过程噪声较大以保证跟手，观测噪声较小以避免
+    // 前期出现明显偏移；初始线速度/角速度默认未知，设为 0。
+    options.ukf.motion_model = "constant_velocity";
+    options.ukf.process_noise = 1000.0;
+    options.ukf.measurement_noise = 0.001;
+    options.ukf.initial_covariance = 1.0;
+    options.ukf.use_initial_velocity = false;
+    options.ukf.initial_velocity = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    options.ukf.initial_linear_velocity = {0.0, 0.0, 0.0};
+    options.ukf.initial_angular_velocity = {0.0, 0.0, 0.0};
+    options.ukf.alpha = 1e-3;
+    options.ukf.beta = 2.0;
+    options.ukf.kappa = 0.0;
+    options.ukf.sample_rate_hz = 100.0;
+    options.ukf.history_size = 0;
+    options.ukf.strict_timestamps = false;
+
+    return options;
+}
 
 std::string Lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
@@ -69,6 +119,88 @@ std::vector<std::string> Split(const std::string& line, char delimiter) {
         parts.emplace_back();
     }
     return parts;
+}
+
+bool IsPathSeparator(char ch) {
+    return ch == '/' || ch == '\\';
+}
+
+std::string ParentPath(const std::string& path) {
+    const std::size_t end = path.find_last_not_of("/\\");
+    if (end == std::string::npos) {
+        return "";
+    }
+
+    const std::size_t separator = path.find_last_of("/\\", end);
+    if (separator == std::string::npos) {
+        return "";
+    }
+    if (separator == 0) {
+        return path.substr(0, 1);
+    }
+    if (separator == 2 && path.size() >= 3 && path[1] == ':' && IsPathSeparator(path[2])) {
+        return path.substr(0, 3);
+    }
+    return path.substr(0, separator);
+}
+
+void MakeDirectory(const std::string& directory) {
+    if (directory.empty() || directory == "." ||
+        (directory.size() == 2 && directory[1] == ':')) {
+        return;
+    }
+
+    errno = 0;
+#ifdef _WIN32
+    const int result = _mkdir(directory.c_str());
+#else
+    const int result = mkdir(directory.c_str(), 0755);
+#endif
+    if (result != 0 && errno != EEXIST) {
+        throw std::runtime_error("failed to create directory: " + directory);
+    }
+}
+
+void CreateDirectories(const std::string& directory) {
+    std::string normalized = directory;
+    while (!normalized.empty() && IsPathSeparator(normalized[normalized.size() - 1])) {
+        normalized.erase(normalized.size() - 1);
+    }
+    if (normalized.empty()) {
+        return;
+    }
+
+    std::string current;
+    std::size_t start = 0;
+    if (normalized.size() >= 2 && normalized[1] == ':') {
+        current = normalized.substr(0, 2);
+        start = 2;
+        if (start < normalized.size() && IsPathSeparator(normalized[start])) {
+            current += normalized[start];
+            ++start;
+        }
+    } else if (IsPathSeparator(normalized[0])) {
+        current = normalized.substr(0, 1);
+        start = 1;
+    }
+
+    while (start <= normalized.size()) {
+        const std::size_t separator = normalized.find_first_of("/\\", start);
+        const std::size_t count =
+            separator == std::string::npos ? std::string::npos : separator - start;
+        const std::string part = normalized.substr(start, count);
+        if (!part.empty() && part != ".") {
+            if (!current.empty() && !IsPathSeparator(current[current.size() - 1])) {
+                current += '/';
+            }
+            current += part;
+            MakeDirectory(current);
+        }
+        if (separator == std::string::npos) {
+            break;
+        }
+        start = separator + 1;
+    }
 }
 
 double ParseDouble(const std::string& value, const std::string& name) {
@@ -117,6 +249,10 @@ void PrintUsage() {
     std::cerr
         << "usage: rt_filter_cpp_demo --input in.csv --output out.csv "
         << "--algorithm one_euro_z|ukf [params]\n\n"
+        << "Defaults when no arguments are supplied:\n"
+        << "  --input examples/demo_data/noisy_line.csv\n"
+        << "  --algorithm ukf\n"
+        << "  --output outputs/cpp_demo/noisy_line_ukf.csv\n\n"
         << "One Euro params:\n"
         << "  --min-cutoff 0.02 --beta 6.0 --d-cutoff 2.0 --derivative-deadband 1.0\n"
         << "UKF params:\n"
@@ -125,7 +261,8 @@ void PrintUsage() {
 }
 
 Options ParseOptions(int argc, char** argv) {
-    Options options;
+    Options options = DefaultOptions();
+    bool output_provided = false;
     for (int i = 1; i < argc; ++i) {
         const std::string key = argv[i];
         auto require_value = [&]() -> std::string {
@@ -142,6 +279,7 @@ Options ParseOptions(int argc, char** argv) {
             options.input = require_value();
         } else if (key == "--output") {
             options.output = require_value();
+            output_provided = true;
         } else if (key == "--algorithm") {
             options.algorithm = Lower(require_value());
         } else if (key == "--sample-rate-hz") {
@@ -199,14 +337,11 @@ Options ParseOptions(int argc, char** argv) {
         }
     }
 
-    if (options.input.empty()) {
-        throw std::invalid_argument("--input is required");
-    }
-    if (options.output.empty()) {
-        throw std::invalid_argument("--output is required");
-    }
     if (options.algorithm != "one_euro_z" && options.algorithm != "ukf") {
         throw std::invalid_argument("--algorithm must be one_euro_z or ukf");
+    }
+    if (!output_provided) {
+        options.output = DefaultOutputForAlgorithm(options.algorithm);
     }
     return options;
 }
@@ -271,15 +406,15 @@ RigidMatrix RigidFromCompactColumns(
     return RigidMatrix(rotation, Eigen::Vector3d(x, y, z));
 }
 
-CsvTrajectory ReadCsvTrajectory(const std::filesystem::path& path) {
-    std::ifstream input(path);
+CsvTrajectory ReadCsvTrajectory(const std::string& path) {
+    std::ifstream input(path.c_str());
     if (!input) {
-        throw std::runtime_error("failed to open input: " + path.string());
+        throw std::runtime_error("failed to open input: " + path);
     }
 
     std::string line;
     if (!std::getline(input, line)) {
-        throw std::runtime_error("input CSV is empty: " + path.string());
+        throw std::runtime_error("input CSV is empty: " + path);
     }
     const auto header = Split(line, ',');
     const auto index = HeaderIndex(header);
@@ -325,18 +460,18 @@ CsvTrajectory ReadCsvTrajectory(const std::filesystem::path& path) {
 }
 
 void WriteCsvTrajectory(
-    const std::filesystem::path& path,
+    const std::string& path,
     const std::vector<RigidMatrix>& rigids,
     const std::vector<double>& timestamps,
     bool has_timestamps) {
-    const auto parent = path.parent_path();
+    const std::string parent = ParentPath(path);
     if (!parent.empty()) {
-        std::filesystem::create_directories(parent);
+        CreateDirectories(parent);
     }
 
-    std::ofstream output(path);
+    std::ofstream output(path.c_str());
     if (!output) {
-        throw std::runtime_error("failed to open output: " + path.string());
+        throw std::runtime_error("failed to open output: " + path);
     }
     output << std::setprecision(17);
     if (has_timestamps) {
@@ -384,84 +519,39 @@ void WriteCsvTrajectory(
     }
 }
 
-std::vector<RigidMatrix> RunFilter(const Options& options, const CsvTrajectory& trajectory) {
-    // 批量轨迹滤波入口：从 CSV 读出的整段 RigidMatrix 序列一次性传给滤波器。
-    // 输出的每一帧仍然是一一对应的 4x4 位姿，可直接写回 CSV 并交给 Python 框架评估。
-    const std::vector<double>* timestamps =
-        trajectory.has_timestamps ? &trajectory.timestamps : nullptr;
+std::vector<RigidMatrix> RunRealtimeFrameFilter(
+    const Options& options,
+    const CsvTrajectory& trajectory) {
+    // 实时帧滤波入口：这里用 CSV 中的每一行模拟实时系统收到的一帧 RigidMatrix。
+    // 关键点是滤波器对象只创建一次，并在循环中跨帧复用。这样 One Euro 的上一帧
+    // 输出、UKF 的状态向量/协方差/参考姿态都会被保留下来。
+    std::vector<RigidMatrix> filtered;
+    filtered.reserve(trajectory.rigids.size());
+
+    auto timestamp_at = [&](std::size_t frame_index) -> output_alg::OptionalDouble {
+        if (!trajectory.has_timestamps) {
+            return output_alg::OptionalDouble();
+        }
+        return output_alg::OptionalDouble(trajectory.timestamps[frame_index]);
+    };
+
     if (options.algorithm == "one_euro_z") {
-        // One Euro Z 只修改 Z 平移；X/Y 和旋转保持输入值。
-        return output_alg::FilterOneEuroZTrajectory(
-            trajectory.rigids,
-            timestamps,
-            options.one_euro);
+        output_alg::OneEuroZRealtimeFilter filter(options.one_euro);
+        for (std::size_t i = 0; i < trajectory.rigids.size(); ++i) {
+            // 实时调用形式：当前帧输入 RigidMatrix，立即返回当前帧滤波后的 RigidMatrix。
+            const RigidMatrix filtered_frame = filter.Update(trajectory.rigids[i], timestamp_at(i));
+            filtered.push_back(filtered_frame);
+        }
+        return filtered;
     }
-    // UKF 会同时处理平移和相对初始姿态的旋转向量，适合轨迹整体降噪。
-    return output_alg::FilterUkfTrajectory(
-        trajectory.rigids,
-        timestamps,
-        options.ukf);
-}
 
-void CallEulerZyxInterfaces(const Options& options, const CsvTrajectory& trajectory) {
-    // 这个函数演示“实时扫描界面”一类场景下的单帧接口。
-    // 真实工程中，下面两个参数对象和两个 m_groupedXXXFilters 通常是外部类成员；
-    // lambda 每来一帧就按 groupId 找到对应滤波器状态，直接使用并更新 pos/eulerZyx。
-    output_alg::OneEuroZParameters oneEuroParams = options.one_euro;
-    output_alg::UkfParameters ukfParams = options.ukf;
-
-    // 每个 groupId 保留独立滤波状态。这样多目标、多轨迹或多扫描分组之间不会互相污染。
-    // 注意：滤波器必须跨帧复用，不能在每帧 lambda 内临时创建，否则实时滤波会退化为无历史状态。
-    std::unordered_map<int, output_alg::OneEuroZRealtimeFilter> m_groupedOneEuroZFilters;
-    std::unordered_map<int, output_alg::UkfRealtimeFilter> m_groupedUkfFilters;
-
-    // One Euro Z 的“坐标 + zyx 欧拉角”接口。
-    // 输入:
-    //   groupId   分组 id，用于找到该组的历史滤波状态。
-    //   pos       当前帧坐标，函数成功后会被原地改成滤波后的坐标。
-    //   eulerZyx  当前帧欧拉角，顺序固定为 [z,y,x]，单位 rad；One Euro Z 不改旋转，
-    //             但接口仍会把转换后的结果写回，方便调用方统一处理。
-    auto calcOneEuroZEulerZyx = [&](int& groupId, Eigen::Vector3d& pos, Eigen::Vector3d& eulerZyx) -> bool {
-        auto iter = m_groupedOneEuroZFilters.find(groupId);
-        if (iter == m_groupedOneEuroZFilters.end()) {
-            // 第一次遇到某个 groupId 时才创建滤波器，后续帧复用同一个对象中的历史状态。
-            iter = m_groupedOneEuroZFilters
-                       .emplace(groupId, output_alg::OneEuroZRealtimeFilter(oneEuroParams))
-                       .first;
-        }
-        // 内部会把 pos/eulerZyx 转成 RigidMatrix，滤波后再转回 zyx 欧拉角并写回引用。
-        return output_alg::FilterOneEuroZEulerZyx(iter->second, pos, eulerZyx);
-    };
-
-    // UKF 的“坐标 + zyx 欧拉角”接口。
-    // 与 One Euro Z 不同，UKF 会同时滤波坐标和姿态，因此 eulerZyx 输出可能变化。
-    // 欧拉角顺序同样固定为 [z,y,x]，对应 R = Rz * Ry * Rx。
-    auto calcUkfEulerZyx = [&](int& groupId, Eigen::Vector3d& pos, Eigen::Vector3d& eulerZyx) -> bool {
-        auto iter = m_groupedUkfFilters.find(groupId);
-        if (iter == m_groupedUkfFilters.end()) {
-            // UKF 的速度、协方差和参考姿态都保存在滤波器对象中，必须按 groupId 长期复用。
-            iter = m_groupedUkfFilters
-                       .emplace(groupId, output_alg::UkfRealtimeFilter(ukfParams))
-                       .first;
-        }
-        // 输出同样通过 pos/eulerZyx 引用返回，便于直接写回外部成员或界面显示变量。
-        return output_alg::FilterUkfEulerZyx(iter->second, pos, eulerZyx);
-    };
-
-    // demo 只取第一帧做一次单帧接口 smoke test。
-    // 实际实时系统中，这段应放在每帧处理逻辑里，并把真实 groupId、pos、eulerZyx 传进 lambda。
-    int groupId = 0;
-    const auto sample = output_alg::PositionEulerZyxFromRigid(trajectory.rigids.front());
-    Eigen::Vector3d oneEuroPos = sample.position;
-    Eigen::Vector3d oneEuroEulerZyx = sample.euler_zyx;
-    Eigen::Vector3d ukfPos = sample.position;
-    Eigen::Vector3d ukfEulerZyx = sample.euler_zyx;
-
-    const bool oneEuroOk = calcOneEuroZEulerZyx(groupId, oneEuroPos, oneEuroEulerZyx);
-    const bool ukfOk = calcUkfEulerZyx(groupId, ukfPos, ukfEulerZyx);
-    std::cout << "euler_zyx interface smoke one_euro_z=" << oneEuroOk
-              << " ukf=" << ukfOk
-              << " first_z=(" << oneEuroPos.z() << ", " << ukfPos.z() << ")\n";
+    output_alg::UkfRealtimeFilter filter(options.ukf);
+    for (std::size_t i = 0; i < trajectory.rigids.size(); ++i) {
+        // UKF 同样按帧调用 Update；外部系统拿到 filtered_frame 后即可更新界面或写出轨迹。
+        const RigidMatrix filtered_frame = filter.Update(trajectory.rigids[i], timestamp_at(i));
+        filtered.push_back(filtered_frame);
+    }
+    return filtered;
 }
 
 }  // namespace
@@ -470,13 +560,11 @@ int main(int argc, char** argv) {
     try {
         const Options options = ParseOptions(argc, argv);
         const CsvTrajectory input = ReadCsvTrajectory(options.input);
-        // 单帧接口演示：模拟外部类成员 m_groupedXXXFilters + lambda 的调用方式。
-        CallEulerZyxInterfaces(options, input);
 
-        // 批量接口演示：处理完整 CSV 轨迹并写出结果，用于离线评估。
-        const std::vector<RigidMatrix> filtered = RunFilter(options, input);
+        // 实时接口演示：每读到一帧 RigidMatrix，就调用一次 Update 并得到滤波后的 RigidMatrix。
+        const std::vector<RigidMatrix> filtered = RunRealtimeFrameFilter(options, input);
         WriteCsvTrajectory(options.output, filtered, input.timestamps, input.has_timestamps);
-        std::cout << "wrote " << options.output.string() << " frames=" << filtered.size() << '\n';
+        std::cout << "wrote " << options.output << " frames=" << filtered.size() << '\n';
         return 0;
     } catch (const std::exception& exc) {
         std::cerr << "error: " << exc.what() << '\n';

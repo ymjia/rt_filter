@@ -2,9 +2,9 @@
 
 #include <cstddef>
 #include <deque>
-#include <optional>
 #include <vector>
 
+#include "optional_double.hpp"
 #include "RigidMatrix.h"
 
 namespace output_alg {
@@ -68,7 +68,7 @@ public:
     // timestamp 单位为秒；未提供时使用 sample_rate_hz。
     Sn3DAlgorithm::RigidMatrix Update(
         const Sn3DAlgorithm::RigidMatrix& rigid,
-        std::optional<double> timestamp = std::nullopt);
+        OptionalDouble timestamp = OptionalDouble());
 
     // 整段轨迹接口。对每一帧顺序调用 Update，并返回与输入等长的滤波结果。
     // timestamps 为 nullptr 时使用固定采样率；非空时长度必须与 rigids 一致。
@@ -91,7 +91,7 @@ public:
 private:
     static void Validate(const OneEuroZParameters& params);
     static double LowpassAlpha(double cutoff, double dt);
-    double DeltaTime(std::optional<double> timestamp) const;
+    double DeltaTime(OptionalDouble timestamp) const;
     void PushHistory(const Sn3DAlgorithm::RigidMatrix& rigid);
 
     OneEuroZParameters params_;
@@ -99,7 +99,7 @@ private:
     double last_raw_z_ = 0.0;
     double filtered_z_ = 0.0;
     double derivative_hat_ = 0.0;
-    std::optional<double> last_timestamp_;
+    OptionalDouble last_timestamp_;
     std::deque<Sn3DAlgorithm::RigidMatrix> history_;
 };
 

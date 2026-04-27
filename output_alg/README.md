@@ -90,7 +90,7 @@ std::vector<RigidMatrix> filtered = filter.FilterTrajectory(rigids, &timestamps)
 Build a C++ object file:
 
 ```powershell
-g++ -std=c++17 -Ioutput_alg -c output_alg/one_euro_z.cpp -o build/one_euro_z.o
+g++ -std=c++14 -Ioutput_alg -c output_alg/one_euro_z.cpp -o build/one_euro_z.o
 ```
 
 ## UKF Realtime Filter

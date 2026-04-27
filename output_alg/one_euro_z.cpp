@@ -37,7 +37,7 @@ void OneEuroZRealtimeFilter::SetParameters(const OneEuroZParameters& params, boo
 
 Sn3DAlgorithm::RigidMatrix OneEuroZRealtimeFilter::Update(
     const Sn3DAlgorithm::RigidMatrix& rigid,
-    std::optional<double> timestamp) {
+    OptionalDouble timestamp) {
     Sn3DAlgorithm::RigidMatrix filtered = rigid;
     const double raw_z = rigid.get_translation().z();
 
@@ -90,11 +90,11 @@ std::vector<Sn3DAlgorithm::RigidMatrix> OneEuroZRealtimeFilter::FilterTrajectory
     std::vector<Sn3DAlgorithm::RigidMatrix> output;
     output.reserve(rigids.size());
     for (std::size_t i = 0; i < rigids.size(); ++i) {
-        std::optional<double> timestamp = std::nullopt;
         if (timestamps != nullptr) {
-            timestamp = (*timestamps)[i];
+            output.push_back(Update(rigids[i], (*timestamps)[i]));
+        } else {
+            output.push_back(Update(rigids[i]));
         }
-        output.push_back(Update(rigids[i], timestamp));
     }
     return output;
 }
@@ -130,7 +130,7 @@ double OneEuroZRealtimeFilter::LowpassAlpha(double cutoff, double dt) {
     return dt / (dt + tau);
 }
 
-double OneEuroZRealtimeFilter::DeltaTime(std::optional<double> timestamp) const {
+double OneEuroZRealtimeFilter::DeltaTime(OptionalDouble timestamp) const {
     const double nominal = 1.0 / params_.sample_rate_hz;
     if (!timestamp.has_value() || !last_timestamp_.has_value()) {
         return nominal;

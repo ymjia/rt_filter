@@ -3,12 +3,12 @@
 #include <array>
 #include <cstddef>
 #include <deque>
-#include <optional>
 #include <string>
 #include <vector>
 
 #include <Eigen/Dense>
 
+#include "optional_double.hpp"
 #include "RigidMatrix.h"
 
 namespace output_alg {
@@ -89,7 +89,7 @@ public:
     // 第一帧会用于初始化状态和参考姿态，通常会原样输出。
     Sn3DAlgorithm::RigidMatrix Update(
         const Sn3DAlgorithm::RigidMatrix& rigid,
-        std::optional<double> timestamp = std::nullopt);
+        OptionalDouble timestamp = OptionalDouble());
 
     // 整段轨迹接口。对每一帧顺序调用 Update，并返回与输入等长的滤波结果。
     // timestamps 为 nullptr 时使用固定采样率；非空时长度必须与 rigids 一致。
@@ -137,8 +137,8 @@ private:
 
     Sn3DAlgorithm::RigidMatrix Initialize(
         const Sn3DAlgorithm::RigidMatrix& rigid,
-        std::optional<double> timestamp);
-    double DeltaTime(std::optional<double> timestamp) const;
+        OptionalDouble timestamp);
+    double DeltaTime(OptionalDouble timestamp) const;
     void PushHistory(const Sn3DAlgorithm::RigidMatrix& rigid);
 
     UkfParameters params_;
@@ -151,7 +151,7 @@ private:
     Eigen::MatrixXd covariance_;
     Eigen::VectorXd weights_mean_;
     Eigen::VectorXd weights_cov_;
-    std::optional<double> last_timestamp_;
+    OptionalDouble last_timestamp_;
     std::deque<Sn3DAlgorithm::RigidMatrix> history_;
 };
 
