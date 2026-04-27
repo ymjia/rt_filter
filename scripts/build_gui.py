@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ SPEC_FILE = ROOT / "rt_filter_gui.spec"
 DEFAULT_DIST = ROOT / "dist"
 DEFAULT_WORK = ROOT / "build" / "pyinstaller"
 APP_NAME = "rt-filter-gui"
+CONFIG_FILE = ROOT / "rt_filter_gui.json"
+CONFIG_FILENAME = CONFIG_FILE.name
 
 
 def _parse_args() -> argparse.Namespace:
@@ -37,6 +40,12 @@ def _packaged_executable(distpath: Path) -> Path:
     if sys.platform.startswith("win"):
         return distpath / APP_NAME / f"{APP_NAME}.exe"
     return distpath / APP_NAME / APP_NAME
+
+
+def _packaged_config_path(distpath: Path, packaged_executable: Path) -> Path:
+    if sys.platform == "darwin":
+        return distpath / CONFIG_FILENAME
+    return packaged_executable.parent / CONFIG_FILENAME
 
 
 def main() -> int:
@@ -66,6 +75,12 @@ def main() -> int:
     packaged = _packaged_executable(distpath)
     if not packaged.exists():
         raise FileNotFoundError(f"packaged executable was not created: {packaged}")
+
+    if CONFIG_FILE.exists():
+        config_target = _packaged_config_path(distpath, packaged)
+        config_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(CONFIG_FILE, config_target)
+        print(f"wrote config: {config_target}")
 
     if not args.skip_smoke_test:
         smoke_env = env.copy()

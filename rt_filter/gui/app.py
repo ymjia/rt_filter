@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import os
 import subprocess
@@ -75,6 +76,25 @@ METRIC_COLUMNS = [
     "to_reference_translation_rmse",
     "reference_rmse_improvement",
 ]
+
+GUI_CONFIG_FILENAME = "rt_filter_gui.json"
+_GUI_CONFIG_UNSET = object()
+_gui_config_cache: GuiConfig | None | object = _GUI_CONFIG_UNSET
+
+
+@dataclass(frozen=True)
+class GuiInputRoot:
+    path: Path
+    patterns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GuiConfig:
+    config_path: Path
+    input_roots: tuple[GuiInputRoot, ...]
+    reference_path: Path | None
+    output_dir: Path | None
+    auto_load_inputs: bool
 
 
 class PlotCanvas(FigureCanvas):
@@ -347,7 +367,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.input_table, 1)
 
         form = QFormLayout()
-        self.reference_edit = QLineEdit()
+        self.reference_edit = QLineEdit(_default_reference_text())
         ref_button = QPushButton("Browse")
         ref_button.clicked.connect(self.choose_reference)
         ref_row = QHBoxLayout()
@@ -496,10 +516,15 @@ class MainWindow(QMainWindow):
         self.update_results()
 
     def choose_reference(self) -> None:
+        start_dir = self.reference_edit.text().strip()
+        if start_dir:
+            start_path = Path(os.path.expanduser(start_dir))
+            if start_path.is_file():
+                start_dir = str(start_path.resolve().parent)
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select reference trajectory",
-            str(_input_dir()),
+            start_dir or str(_input_dir()),
             "Trajectories (*.csv *.json *.npy *.npz);;All files (*.*)",
         )
         if path:
@@ -924,6 +949,169 @@ def _format_cell(value: Any) -> str:
     return str(value)
 
 
+def _parse_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"expected boolean, got {type(value).__name__}")
+
+
+def _parse_patterns(value: Any, *, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        patterns = [value]
+    elif isinstance(value, list):
+        patterns = value
+    else:
+        raise ValueError(f"patterns must be a string or list of strings, got {type(value).__name__}")
+
+    cleaned = [str(pattern).strip() for pattern in patterns if str(pattern).strip()]
+    if not cleaned:
+        return default
+    return tuple(cleaned)
+
+
+def _resolve_configured_path(raw_path: str, *, config_path: Path) -> Path:
+    expanded = Path(os.path.expanduser(raw_path))
+    if expanded.is_absolute():
+        return expanded.resolve()
+    return (config_path.parent / expanded).resolve()
+
+
+def _builtin_input_roots() -> list[GuiInputRoot]:
+    roots: list[GuiInputRoot] = []
+    for candidate, patterns in (
+        (_resource_root() / "input" / "sn", ("case_*/*.csv",)),
+        (_project_root() / "input" / "sn", ("case_*/*.csv",)),
+        (_resource_root() / "input", ("*.csv", "sn/case_*/*.csv")),
+        (_project_root() / "input", ("*.csv", "sn/case_*/*.csv")),
+        (_resource_root() / "examples" / "demo_data", ("*.csv",)),
+        (_project_root() / "examples" / "demo_data", ("*.csv",)),
+    ):
+        if candidate.exists():
+            resolved = candidate.resolve()
+            if all(root.path != resolved for root in roots):
+                roots.append(GuiInputRoot(resolved, patterns))
+    return roots
+
+
+def _candidate_config_paths() -> list[Path]:
+    candidates: list[Path] = []
+    env_path = os.environ.get("RT_FILTER_GUI_CONFIG", "").strip()
+    if env_path:
+        candidates.append(Path(os.path.expanduser(env_path)))
+
+    candidates.append(Path.cwd() / GUI_CONFIG_FILENAME)
+
+    executable_path = Path(sys.executable).resolve()
+    if getattr(sys, "frozen", False):
+        candidates.append(executable_path.parent / GUI_CONFIG_FILENAME)
+        if sys.platform == "darwin" and executable_path.parent.name == "MacOS":
+            if len(executable_path.parents) > 2:
+                candidates.append(executable_path.parents[2] / GUI_CONFIG_FILENAME)
+            if len(executable_path.parents) > 3:
+                candidates.append(executable_path.parents[3] / GUI_CONFIG_FILENAME)
+        candidates.append(_app_data_root() / GUI_CONFIG_FILENAME)
+
+    candidates.append(_project_root() / GUI_CONFIG_FILENAME)
+    candidates.append(_resource_root() / GUI_CONFIG_FILENAME)
+
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(resolved)
+    return deduped
+
+
+def _load_gui_config() -> GuiConfig | None:
+    config_path: Path | None = None
+    for candidate in _candidate_config_paths():
+        if candidate.is_file():
+            config_path = candidate
+            break
+    if config_path is None:
+        return None
+
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid GUI config JSON: {config_path}\n{exc}") from exc
+
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"invalid GUI config: {config_path}\nroot JSON value must be an object")
+
+    input_roots: list[GuiInputRoot] = []
+    raw_input_roots = raw.get("input_roots")
+    if raw_input_roots is None:
+        legacy_input_dir = str(raw.get("input_dir") or "").strip()
+        if legacy_input_dir:
+            input_roots.append(
+                GuiInputRoot(
+                    _resolve_configured_path(legacy_input_dir, config_path=config_path),
+                    _parse_patterns(raw.get("input_patterns"), default=("*.csv",)),
+                )
+            )
+    else:
+        if not isinstance(raw_input_roots, list):
+            raise RuntimeError(f"invalid GUI config: {config_path}\ninput_roots must be a list")
+        for index, item in enumerate(raw_input_roots):
+            if not isinstance(item, dict):
+                raise RuntimeError(
+                    f"invalid GUI config: {config_path}\ninput_roots[{index}] must be an object"
+                )
+            raw_path = str(item.get("path") or "").strip()
+            if not raw_path:
+                raise RuntimeError(
+                    f"invalid GUI config: {config_path}\ninput_roots[{index}].path must be a non-empty string"
+                )
+            input_roots.append(
+                GuiInputRoot(
+                    _resolve_configured_path(raw_path, config_path=config_path),
+                    _parse_patterns(item.get("patterns"), default=("*.csv",)),
+                )
+            )
+
+    raw_reference = str(raw.get("reference_path") or "").strip()
+    reference_path = (
+        _resolve_configured_path(raw_reference, config_path=config_path)
+        if raw_reference
+        else None
+    )
+
+    raw_output = str(raw.get("output_dir") or "").strip()
+    output_dir = (
+        _resolve_configured_path(raw_output, config_path=config_path)
+        if raw_output
+        else None
+    )
+
+    try:
+        auto_load_inputs = _parse_bool(raw.get("auto_load_inputs"), default=True)
+    except ValueError as exc:
+        raise RuntimeError(f"invalid GUI config: {config_path}\n{exc}") from exc
+
+    return GuiConfig(
+        config_path=config_path,
+        input_roots=tuple(input_roots),
+        reference_path=reference_path,
+        output_dir=output_dir,
+        auto_load_inputs=auto_load_inputs,
+    )
+
+
+def _gui_config() -> GuiConfig | None:
+    global _gui_config_cache
+    if _gui_config_cache is _GUI_CONFIG_UNSET:
+        _gui_config_cache = _load_gui_config()
+    return _gui_config_cache if isinstance(_gui_config_cache, GuiConfig) else None
+
+
 def _project_root() -> Path:
     candidates: list[Path] = []
     executable_path = Path(sys.executable).resolve()
@@ -962,45 +1150,47 @@ def _app_data_root() -> Path:
     return (base / "rt-filter").resolve()
 
 
-def _candidate_input_roots() -> list[Path]:
-    roots: list[Path] = []
-    for candidate in (
-        _resource_root() / "input" / "sn",
-        _project_root() / "input" / "sn",
-        _resource_root() / "input",
-        _project_root() / "input",
-        _resource_root() / "examples" / "demo_data",
-        _project_root() / "examples" / "demo_data",
-    ):
-        if candidate.exists() and candidate not in roots:
-            roots.append(candidate.resolve())
-    return roots
+def _configured_input_roots() -> list[GuiInputRoot]:
+    config = _gui_config()
+    if config is not None and config.input_roots:
+        return list(config.input_roots)
+    return _builtin_input_roots()
 
 
 def _input_dir() -> Path:
-    roots = _candidate_input_roots()
+    roots = _configured_input_roots()
     if roots:
-        return roots[0]
+        return roots[0].path
     return _project_root().resolve()
 
 
 def _output_dir() -> Path:
+    config = _gui_config()
+    if config is not None and config.output_dir is not None:
+        return config.output_dir
     if getattr(sys, "frozen", False):
         return (_app_data_root() / "outputs" / "gui").resolve()
     return (_project_root() / "outputs" / "gui").resolve()
 
 
+def _default_reference_text() -> str:
+    config = _gui_config()
+    if config is not None and config.reference_path is not None:
+        return str(config.reference_path)
+    return ""
+
+
 def _default_input_files() -> list[Path]:
-    for root in _candidate_input_roots():
-        if root.name == "sn":
-            patterns = ("case_*/*.csv",)
-        elif root.name == "demo_data":
-            patterns = ("*.csv",)
-        else:
-            patterns = ("*.csv", "sn/case_*/*.csv")
+    config = _gui_config()
+    if config is not None and not config.auto_load_inputs:
+        return []
+
+    for root in _configured_input_roots():
         files: list[Path] = []
-        for pattern in patterns:
-            files.extend(root.glob(pattern))
+        if not root.path.exists():
+            continue
+        for pattern in root.patterns:
+            files.extend(root.path.glob(pattern))
         files = sorted({path for path in files if path.name.lower() != "manifest.csv"})
         if files:
             return files

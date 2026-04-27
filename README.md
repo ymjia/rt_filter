@@ -443,6 +443,43 @@ rt-filter gui
 rt-filter-gui
 ```
 
+GUI 会在运行时读取 `rt_filter_gui.json`，这样默认路径不需要再写死在代码里。
+常见搜索位置包括：
+
+- 当前工作目录
+- 可执行程序旁边；macOS `.app` 还会额外检查 `.app` 同级目录
+- `~/Library/Application Support/rt-filter/rt_filter_gui.json` 或 `%LOCALAPPDATA%\rt-filter\rt_filter_gui.json`
+- 仓库根目录
+
+默认配置文件示例：
+
+```json
+{
+  "input_roots": [
+    {
+      "path": "input/sn",
+      "patterns": ["case_*/*.csv"]
+    },
+    {
+      "path": "examples/demo_data",
+      "patterns": ["*.csv"]
+    }
+  ],
+  "reference_path": "",
+  "output_dir": "outputs/gui",
+  "auto_load_inputs": true
+}
+```
+
+字段说明：
+
+- `input_roots`：按顺序定义默认输入目录和自动加载 glob 规则，第一项也会作为文件选择器的默认打开目录
+- `reference_path`：默认参考轨迹文件，可留空
+- `output_dir`：GUI 默认输出目录
+- `auto_load_inputs`：是否在启动时自动加载默认测试用例
+
+相对路径会按 `rt_filter_gui.json` 所在目录解析，所以后续改目录时只改 JSON 即可。
+
 构建 Windows/macOS 可执行程序：
 
 ```bash
@@ -455,14 +492,14 @@ python scripts/build_gui.py
 - macOS 产物：`dist/rt-filter-gui.app`
 - Windows 产物：`dist/rt-filter-gui/rt-filter-gui.exe`
 
-打包后的 GUI 会优先加载仓库中的 `input/sn/` 测试用例；如果作为独立应用运行，则会优先使用打包进去的 `input/sn/`，再回退到 `examples/demo_data/`，输出目录会写到：
+构建脚本还会把 `rt_filter_gui.json` 复制到打包产物旁边，便于后续直接修改配置。
 
-- macOS：`~/Library/Application Support/rt-filter/outputs/gui`
-- Windows：`%LOCALAPPDATA%\\rt-filter\\outputs\\gui`
+如果没有额外修改 `rt_filter_gui.json`，打包后的 GUI 默认会优先加载 `input/sn/` 测试用例，找不到时再回退到 `examples/demo_data/`。
+默认输出目录由 `rt_filter_gui.json` 控制；当前默认值是相对配置文件位置的 `outputs/gui`。
 
 界面工作流：
 
-- 选择一个或多个输入轨迹，默认会自动加载 `input/sn/case_*/*.csv` 测试用例；独立可执行程序也会优先加载内置的 `input/sn/`
+- 选择一个或多个输入轨迹，默认会按 `rt_filter_gui.json` 中的 `input_roots` 自动加载测试用例
 - 在滤波表中勾选算法，参数用 JSON 写法，列表值会展开成参数网格
 - 运行后查看指标表、维度结论和曲线图
 - 结果会写入 `outputs/gui/run_YYYYMMDD_HHMMSS`
