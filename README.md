@@ -12,7 +12,7 @@ python -m pip install -e .[dev]
 
 ## 输入格式
 
-支持 `.csv`、`.json`、`.npy`、`.npz`。
+支持 `.csv`、`.txt`、`.json`、`.npy`、`.npz`。
 
 CSV 可使用以下任一形式：
 
@@ -21,6 +21,13 @@ CSV 可使用以下任一形式：
 - 矩阵列：`m00,m01,...,m33`
 - 可选时间列：`timestamp`、`time` 或 `t`
 - 可选状态列：`status`，值为 `-1` 的行默认丢弃
+
+也支持 SN 参考轨迹的 `x,y,z,xr,yr,zr,time,rate` 形式：
+
+- `.csv`：可为逗号分隔或制表符分隔，要求包含表头
+- `.txt`：按 `x y z xr yr zr time rate` 列顺序读取，可无表头
+- `xr,yr,zr` 按 XYZ 欧拉角 `degrees=True` 解释
+- 时间戳默认优先按 `rate` 列生成，与 `prepare_sn_ref_data.py` 保持一致
 
 ## 单条轨迹滤波
 
@@ -511,7 +518,7 @@ python scripts/build_gui.py
 界面工作流：
 
 - 选择一个或多个输入轨迹，默认会按 `rt_filter_gui.json` 中的 `input_roots` 自动加载测试用例
-- `Add Dir` 会递归扫描所选目录及其子目录中的 `.csv/.json/.npy/.npz` 轨迹文件
+- `Add Dir` 会递归扫描所选目录及其子目录中的 `.csv/.txt/.json/.npy/.npz` 轨迹文件
 - GUI 会把上一次已添加且仍存在的输入文件写回 `rt_filter_gui.json`，下次启动时优先恢复这些 case
 - 在滤波表中勾选算法，参数用 JSON 写法，列表值会展开成参数网格
 - 运行后查看指标表、维度结论和曲线图；右下角新增 `Per-frame Compute Time` 图，可直接比较不同滤波方法的逐帧耗时

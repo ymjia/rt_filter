@@ -19,7 +19,7 @@ from rt_filter.analysis import (
 from rt_filter.evaluation import trajectory_metrics
 from rt_filter.filters import available_filters, cpp_demo_available
 from rt_filter.gui.chart_data import complete_neighbor_slice, neighbor_mean_deviation
-from rt_filter.io import read_trajectory
+from rt_filter.io import SUPPORTED_TRAJECTORY_SUFFIXES, read_trajectory
 from rt_filter.paraview_export import write_paraview_comparison_script
 from rt_filter.trajectory import Trajectory
 
@@ -84,6 +84,8 @@ METRIC_COLUMNS = [
 GUI_CONFIG_FILENAME = "rt_filter_gui.json"
 _GUI_CONFIG_UNSET = object()
 _gui_config_cache: GuiConfig | None | object = _GUI_CONFIG_UNSET
+GUI_TRAJECTORY_FILTER = "Trajectories (*.csv *.txt *.json *.npy *.npz);;All files (*.*)"
+GUI_DEFAULT_PATTERN_TUPLE = tuple(f"*{suffix}" for suffix in SUPPORTED_TRAJECTORY_SUFFIXES)
 
 
 @dataclass(frozen=True)
@@ -599,7 +601,7 @@ class MainWindow(QMainWindow):
             self,
             "Select trajectories",
             str(_input_dir()),
-            "Trajectories (*.csv *.json *.npy *.npz);;All files (*.*)",
+            GUI_TRAJECTORY_FILTER,
         )
         self._append_inputs([Path(file) for file in files])
 
@@ -608,7 +610,7 @@ class MainWindow(QMainWindow):
         if not directory:
             return
         paths: list[Path] = []
-        for pattern in ("*.csv", "*.json", "*.npy", "*.npz"):
+        for pattern in GUI_DEFAULT_PATTERN_TUPLE:
             paths.extend(Path(directory).rglob(pattern))
         paths = [path for path in sorted(paths) if path.name.lower() != "manifest.csv"]
         self._append_inputs(paths)
@@ -631,7 +633,7 @@ class MainWindow(QMainWindow):
             self,
             "Select reference trajectory",
             start_dir or str(_input_dir()),
-            "Trajectories (*.csv *.json *.npy *.npz);;All files (*.*)",
+            GUI_TRAJECTORY_FILTER,
         )
         if path:
             self.reference_edit.setText(path)
@@ -1182,12 +1184,12 @@ def _serialize_configured_path(path: Path, *, config_path: Path) -> str:
 def _builtin_input_roots() -> list[GuiInputRoot]:
     roots: list[GuiInputRoot] = []
     for candidate, patterns in (
-        (_resource_root() / "input" / "sn", ("case_*/*.csv",)),
-        (_project_root() / "input" / "sn", ("case_*/*.csv",)),
-        (_resource_root() / "input", ("*.csv", "sn/case_*/*.csv")),
-        (_project_root() / "input", ("*.csv", "sn/case_*/*.csv")),
-        (_resource_root() / "examples" / "demo_data", ("*.csv",)),
-        (_project_root() / "examples" / "demo_data", ("*.csv",)),
+        (_resource_root() / "input" / "sn", ("case_*/*.csv", "case_*/*.txt")),
+        (_project_root() / "input" / "sn", ("case_*/*.csv", "case_*/*.txt")),
+        (_resource_root() / "input", ("*.csv", "*.txt", "sn/case_*/*.csv", "sn/case_*/*.txt")),
+        (_project_root() / "input", ("*.csv", "*.txt", "sn/case_*/*.csv", "sn/case_*/*.txt")),
+        (_resource_root() / "examples" / "demo_data", ("*.csv", "*.txt")),
+        (_project_root() / "examples" / "demo_data", ("*.csv", "*.txt")),
     ):
         if candidate.exists():
             resolved = candidate.resolve()
@@ -1253,7 +1255,7 @@ def _load_gui_config() -> GuiConfig | None:
             input_roots.append(
                 GuiInputRoot(
                     _resolve_configured_path(legacy_input_dir, config_path=config_path),
-                    _parse_patterns(raw.get("input_patterns"), default=("*.csv",)),
+                    _parse_patterns(raw.get("input_patterns"), default=GUI_DEFAULT_PATTERN_TUPLE),
                 )
             )
     else:
@@ -1276,7 +1278,7 @@ def _load_gui_config() -> GuiConfig | None:
                         config_path=config_path,
                         prefer_existing=True,
                     ),
-                    _parse_patterns(item.get("patterns"), default=("*.csv",)),
+                    _parse_patterns(item.get("patterns"), default=GUI_DEFAULT_PATTERN_TUPLE),
                 )
             )
 

@@ -6,8 +6,14 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.spatial.transform import Rotation
 
-from rt_filter.se3 import as_pose_array, poses_from_xyz_quat_wxyz, poses_to_xyz_quat_wxyz
+from rt_filter.se3 import (
+    as_pose_array,
+    make_poses,
+    poses_from_xyz_quat_wxyz,
+    poses_to_xyz_quat_wxyz,
+)
 from rt_filter.trajectory import Trajectory
 
 
@@ -17,6 +23,8 @@ XYZ_COLUMNS = ("x", "y", "z")
 Q_WXYZ_COLUMNS = ("qw", "qx", "qy", "qz")
 Q_XYZW_COLUMNS = ("qx", "qy", "qz", "qw")
 MATRIX_COLUMNS = tuple(f"m{r}{c}" for r in range(4) for c in range(4))
+SN_TRACK_COLUMNS = ("x", "y", "z", "xr", "yr", "zr", "time", "rate")
+SUPPORTED_TRAJECTORY_SUFFIXES = (".csv", ".txt", ".json", ".npy", ".npz")
 
 
 def read_trajectory(path: str | Path, *, drop_invalid: bool = True) -> Trajectory:
@@ -24,6 +32,8 @@ def read_trajectory(path: str | Path, *, drop_invalid: bool = True) -> Trajector
     suffix = file_path.suffix.lower()
     if suffix == ".csv":
         return _read_csv(file_path, drop_invalid=drop_invalid)
+    if suffix == ".txt":
+        return _read_txt(file_path)
     if suffix == ".json":
         return _read_json(file_path, drop_invalid=drop_invalid)
     if suffix == ".npy":
@@ -90,7 +100,10 @@ def trajectory_to_frame(traj: Trajectory) -> pd.DataFrame:
 
 
 def _read_csv(path: Path, *, drop_invalid: bool) -> Trajectory:
-    frame = pd.read_csv(path)
+    frame = pd.read_csv(path, sep=None, engine="python")
+    sn_track = _read_sn_track_frame(frame, path=path, name=path.stem, format_name="csv")
+    if sn_track is not None:
+        return sn_track
     frame = _filter_invalid_rows(frame, drop_invalid=drop_invalid)
     timestamps = _extract_timestamps(frame)
     poses = _poses_from_frame(frame)
@@ -100,6 +113,23 @@ def _read_csv(path: Path, *, drop_invalid: bool) -> Trajectory:
         name=path.stem,
         metadata={"source": str(path), "format": "csv"},
     )
+
+
+def _read_txt(path: Path) -> Trajectory:
+    frame = pd.read_csv(
+        path,
+        sep=r"[\t, ]+",
+        engine="python",
+        header=None,
+        names=SN_TRACK_COLUMNS,
+    )
+    sn_track = _read_sn_track_frame(frame, path=path, name=path.stem, format_name="txt")
+    if sn_track is None:
+        raise ValueError(
+            "unsupported txt trajectory format; expected columns "
+            "x y z xr yr zr time rate"
+        )
+    return sn_track
 
 
 def _read_json(path: Path, *, drop_invalid: bool) -> Trajectory:
@@ -206,3 +236,70 @@ def _poses_from_frame(frame: pd.DataFrame) -> np.ndarray:
         "cannot infer trajectory columns; expected matrix columns m00..m33 or "
         "x,y,z,qw,qx,qy,qz"
     )
+
+
+def _read_sn_track_frame(
+    frame: pd.DataFrame,
+    *,
+    path: Path,
+    name: str,
+    format_name: str,
+) -> Trajectory | None:
+    lower_to_original = {str(col).lower(): col for col in frame.columns}
+    required_columns = ("x", "y", "z", "xr", "yr", "zr")
+    if not all(col in lower_to_original for col in required_columns):
+        return None
+
+    selected_columns = [
+        lower_to_original[col]
+        for col in ("x", "y", "z", "xr", "yr", "zr")
+        if col in lower_to_original
+    ]
+    if "time" in lower_to_original:
+        selected_columns.append(lower_to_original["time"])
+    if "rate" in lower_to_original:
+        selected_columns.append(lower_to_original["rate"])
+
+    numeric = frame[selected_columns].apply(pd.to_numeric, errors="coerce").dropna().reset_index(drop=True)
+    if numeric.empty:
+        raise ValueError(f"{path} does not contain valid numeric SN trajectory rows")
+
+    positions = numeric[[lower_to_original["x"], lower_to_original["y"], lower_to_original["z"]]].to_numpy(
+        dtype=float
+    )
+    rotations = Rotation.from_euler(
+        "xyz",
+        numeric[[lower_to_original["xr"], lower_to_original["yr"], lower_to_original["zr"]]].to_numpy(dtype=float),
+        degrees=True,
+    )
+    poses = make_poses(positions, rotations)
+    timestamps, timestamp_source = _sn_track_timestamps(numeric)
+    metadata: dict[str, Any] = {
+        "source": str(path),
+        "format": format_name,
+        "position_unit": "mm",
+        "rotation_assumption": "XYZ Euler angles in degrees",
+        "timestamp_source": timestamp_source,
+    }
+    return Trajectory(
+        poses=poses,
+        timestamps=timestamps,
+        name=name,
+        metadata=metadata,
+    )
+
+
+def _sn_track_timestamps(frame: pd.DataFrame) -> tuple[np.ndarray, str]:
+    if "rate" in frame.columns:
+        rate = float(frame["rate"].replace(0, np.nan).dropna().median())
+        if np.isfinite(rate) and rate > 0:
+            return np.arange(len(frame), dtype=float) / rate, "generated from rate column"
+
+    if "time" in frame.columns:
+        time_values = frame["time"].to_numpy(dtype=float)
+        if time_values.size >= 2:
+            dt = np.diff(time_values)
+            if np.all(dt > 0):
+                return time_values - time_values[0], "copied from time column"
+
+    return np.arange(len(frame), dtype=float), "generated from sample index"
