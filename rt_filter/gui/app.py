@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import json
 import os
@@ -57,7 +58,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
         "PySide6 is required for the GUI. Install it with: python -m pip install -e .[gui]"
     ) from exc
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT
 from matplotlib.figure import Figure
 
 
@@ -111,8 +112,12 @@ class PlotCanvas(FigureCanvas):
     def __init__(self) -> None:
         self.figure = Figure(figsize=(7.5, 5.2))
         super().__init__(self.figure)
+        self._home_limits: dict[Any, tuple[tuple[float, float], tuple[float, float]]] = {}
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.updateGeometry()
+        self.setToolTip("Use the mouse wheel to zoom the chart, then double-click to restore the initial view.")
+        self.mpl_connect("scroll_event", self._on_scroll)
+        self.mpl_connect("button_press_event", self._on_button_press)
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
@@ -150,6 +155,7 @@ class PlotCanvas(FigureCanvas):
 
     def plot_empty(self, message: str) -> None:
         self.figure.clear()
+        self._home_limits = {}
         ax = self.figure.add_subplot(111)
         ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes)
         ax.set_axis_off()
@@ -194,6 +200,7 @@ class PlotCanvas(FigureCanvas):
                 _annotate_no_visible_data(ax)
         axes[-1].set_xlabel("timestamp / sample")
         self._apply_time_series_layout()
+        self._remember_home_limits()
         self.draw()
 
     def plot_delta(
@@ -226,6 +233,7 @@ class PlotCanvas(FigureCanvas):
             ax.grid(True, alpha=0.25)
         axes[-1].set_xlabel("timestamp / sample")
         self._apply_time_series_layout()
+        self._remember_home_limits()
         self.draw()
 
     def plot_neighbor_mean_deviation(
@@ -291,6 +299,7 @@ class PlotCanvas(FigureCanvas):
                 ax.set_title("XYZ deviation from neighboring-frame mean")
         axes[-1].set_xlabel("timestamp / sample")
         self._apply_time_series_layout()
+        self._remember_home_limits()
         self.draw()
 
     def plot_metric_bars(
@@ -318,6 +327,7 @@ class PlotCanvas(FigureCanvas):
             ax.set_xticks(range(len(labels)), labels, rotation=75, ha="right", fontsize=7)
             ax.grid(True, axis="y", alpha=0.25)
         self._apply_bar_layout()
+        self._remember_home_limits()
         self.draw()
 
     def plot_dimension_ratios(
@@ -348,6 +358,7 @@ class PlotCanvas(FigureCanvas):
         ax.grid(True, axis="y", alpha=0.25)
         ax.legend()
         self._apply_bar_layout()
+        self._remember_home_limits()
         self.draw()
 
     def plot_compute_times(
@@ -384,7 +395,105 @@ class PlotCanvas(FigureCanvas):
         ax.grid(True, alpha=0.25)
         _legend_if_needed(ax, fontsize=7, loc="upper right")
         self._apply_single_axis_layout()
+        self._remember_home_limits()
         self.draw()
+
+    def _remember_home_limits(self) -> None:
+        self._home_limits = {
+            ax: (
+                tuple(float(value) for value in ax.get_xlim()),
+                tuple(float(value) for value in ax.get_ylim()),
+            )
+            for ax in self.figure.axes
+            if ax.axison
+        }
+
+    def _on_scroll(self, event: Any) -> None:
+        if event.inaxes is None or event.xdata is None or event.ydata is None:
+            return
+        if event.button == "up":
+            scale_factor = 1.0 / 1.2
+        elif event.button == "down":
+            scale_factor = 1.2
+        else:
+            return
+
+        target = event.inaxes
+        x_group = [
+            ax
+            for ax in self.figure.axes
+            if ax.axison and ax.get_shared_x_axes().joined(ax, target)
+        ]
+        y_group = [
+            ax
+            for ax in self.figure.axes
+            if ax.axison and ax.get_shared_y_axes().joined(ax, target)
+        ]
+        if not x_group:
+            x_group = [target]
+        if not y_group:
+            y_group = [target]
+
+        for ax in x_group:
+            self._zoom_axis(ax, axis="x", center=float(event.xdata), scale_factor=scale_factor)
+        for ax in y_group:
+            center = float(event.ydata) if ax is target else float(np.mean(ax.get_ylim()))
+            self._zoom_axis(ax, axis="y", center=center, scale_factor=scale_factor)
+        self.draw_idle()
+
+    def _on_button_press(self, event: Any) -> None:
+        if not getattr(event, "dblclick", False) or event.button != 1:
+            return
+        self._restore_home_limits()
+        self.draw_idle()
+
+    def _restore_home_limits(self) -> None:
+        for ax, (x_limits, y_limits) in self._home_limits.items():
+            ax.set_xlim(x_limits)
+            ax.set_ylim(y_limits)
+
+    def _zoom_axis(
+        self,
+        ax: Any,
+        *,
+        axis: str,
+        center: float,
+        scale_factor: float,
+    ) -> None:
+        current_limits = ax.get_xlim() if axis == "x" else ax.get_ylim()
+        low = float(current_limits[0])
+        high = float(current_limits[1])
+        if not np.isfinite(low) or not np.isfinite(high):
+            return
+        new_limits = (
+            center - (center - low) * scale_factor,
+            center + (high - center) * scale_factor,
+        )
+        if axis == "x":
+            ax.set_xlim(new_limits)
+        else:
+            ax.set_ylim(new_limits)
+
+
+class DetachedPlotWindow(QWidget):
+    def __init__(self, on_close: Callable[[], None]) -> None:
+        super().__init__()
+        self._on_close = on_close
+        self.setWindowTitle("RT Filter Chart")
+        self.resize(1400, 900)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self.canvas = PlotCanvas()
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas, 1)
+
+    def closeEvent(self, event: Any) -> None:
+        self._on_close()
+        super().closeEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -399,6 +508,7 @@ class MainWindow(QMainWindow):
         self.run_dir: Path | None = None
         self.curve_visibility: dict[str, bool] = {}
         self._updating_curve_table = False
+        self.detached_plot_window: DetachedPlotWindow | None = None
 
         self._build_actions()
         self._build_ui()
@@ -579,6 +689,10 @@ class MainWindow(QMainWindow):
         )
         self.chart_combo.currentIndexChanged.connect(self._on_chart_changed)
         chart_row.addWidget(self.chart_combo)
+        self.pop_out_chart_button = QPushButton("Pop Out")
+        self.pop_out_chart_button.setToolTip("Open a larger interactive matplotlib chart window.")
+        self.pop_out_chart_button.clicked.connect(self.open_detached_plot_window)
+        chart_row.addWidget(self.pop_out_chart_button)
         chart_row.addStretch(1)
         layout.addLayout(chart_row)
 
@@ -751,26 +865,43 @@ class MainWindow(QMainWindow):
         self.update_plot()
 
     def update_plot(self) -> None:
+        self._render_plot_to_canvas(self.canvas)
+        if self.detached_plot_window is not None:
+            self._render_plot_to_canvas(self.detached_plot_window.canvas)
+
+    def _render_plot_to_canvas(self, canvas: PlotCanvas) -> None:
         if self.raw is None or not self.results:
-            self.canvas.plot_empty("No results")
-            self._refresh_curve_table()
+            canvas.plot_empty("No results")
+            if canvas is self.canvas:
+                self._refresh_curve_table()
             return
         mode = self.chart_combo.currentText()
         visible_labels = self._visible_curve_labels()
         if mode == "Position XYZ":
-            self.canvas.plot_positions(self.raw, self.results, visible_labels)
+            canvas.plot_positions(self.raw, self.results, visible_labels)
         elif mode == "Filtered - Raw XYZ":
-            self.canvas.plot_delta(self.raw, self.results, visible_labels)
+            canvas.plot_delta(self.raw, self.results, visible_labels)
         elif mode == "XYZ Neighbor Mean Deviation":
-            self.canvas.plot_neighbor_mean_deviation(self.raw, self.results, visible_labels)
+            canvas.plot_neighbor_mean_deviation(self.raw, self.results, visible_labels)
         elif mode == "Metric Bars":
-            self.canvas.plot_metric_bars(self.results, visible_labels)
+            canvas.plot_metric_bars(self.results, visible_labels)
         elif mode == "Dimension Jerk Ratios":
-            self.canvas.plot_dimension_ratios(self.results, visible_labels)
+            canvas.plot_dimension_ratios(self.results, visible_labels)
         elif mode == "Per-frame Compute Time":
-            self.canvas.plot_compute_times(self.results, visible_labels)
+            canvas.plot_compute_times(self.results, visible_labels)
         else:
-            self.canvas.plot_empty("Unknown chart")
+            canvas.plot_empty("Unknown chart")
+
+    def open_detached_plot_window(self) -> None:
+        if self.detached_plot_window is None:
+            self.detached_plot_window = DetachedPlotWindow(self._clear_detached_plot_window)
+        self._render_plot_to_canvas(self.detached_plot_window.canvas)
+        self.detached_plot_window.show()
+        self.detached_plot_window.raise_()
+        self.detached_plot_window.activateWindow()
+
+    def _clear_detached_plot_window(self) -> None:
+        self.detached_plot_window = None
 
     def _on_chart_changed(self) -> None:
         self._refresh_curve_table()
