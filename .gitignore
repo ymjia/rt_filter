@@ -13,3 +13,5 @@ examples/demo_outputs/
 outputs/
 tmp/
 .DS_Store/
+.DS_Store
+ref_data/

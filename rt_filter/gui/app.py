@@ -95,19 +95,51 @@ class GuiConfig:
     reference_path: Path | None
     output_dir: Path | None
     auto_load_inputs: bool
+    restore_recent_inputs: bool
+    recent_input_files: tuple[Path, ...]
+    selected_input_file: Path | None
+    raw_data: dict[str, Any]
 
 
 class PlotCanvas(FigureCanvas):
     def __init__(self) -> None:
-        self.figure = Figure(figsize=(7.5, 5.2), tight_layout=True)
+        self.figure = Figure(figsize=(7.5, 5.2))
         super().__init__(self.figure)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.updateGeometry()
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self.draw_idle()
+
+    def _stacked_axes(self, rows: int) -> list[Any]:
+        axes = self.figure.subplots(rows, 1, sharex=True, squeeze=False)
+        return [axes[row, 0] for row in range(rows)]
+
+    def _apply_time_series_layout(self) -> None:
+        self.figure.subplots_adjust(
+            left=0.085,
+            right=0.985,
+            top=0.975,
+            bottom=0.08,
+            hspace=0.14,
+        )
+
+    def _apply_bar_layout(self) -> None:
+        self.figure.subplots_adjust(
+            left=0.08,
+            right=0.985,
+            top=0.92,
+            bottom=0.28,
+            wspace=0.28,
+        )
 
     def plot_empty(self, message: str) -> None:
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes)
         ax.set_axis_off()
+        self.figure.subplots_adjust(left=0.04, right=0.985, top=0.97, bottom=0.06)
         self.draw()
 
     def plot_positions(
@@ -118,8 +150,9 @@ class PlotCanvas(FigureCanvas):
     ) -> None:
         self.figure.clear()
         x_axis = _sample_axis(raw)
+        axes = self._stacked_axes(3)
         for idx, axis in enumerate("xyz", start=1):
-            ax = self.figure.add_subplot(3, 1, idx)
+            ax = axes[idx - 1]
             x_values: list[np.ndarray] = []
             y_values: list[np.ndarray] = []
             if _is_visible("raw", visible_labels):
@@ -145,9 +178,8 @@ class PlotCanvas(FigureCanvas):
             ax.grid(True, alpha=0.25)
             if not _set_data_limits(ax, x_values, y_values):
                 _annotate_no_visible_data(ax)
-            if idx == 1:
-                _legend_if_needed(ax, fontsize=8, ncols=2)
-        self.figure.axes[-1].set_xlabel("timestamp / sample")
+        axes[-1].set_xlabel("timestamp / sample")
+        self._apply_time_series_layout()
         self.draw()
 
     def plot_delta(
@@ -158,8 +190,9 @@ class PlotCanvas(FigureCanvas):
     ) -> None:
         self.figure.clear()
         raw_axis = _sample_axis(raw)
+        axes = self._stacked_axes(3)
         for idx, axis in enumerate("xyz", start=1):
-            ax = self.figure.add_subplot(3, 1, idx)
+            ax = axes[idx - 1]
             x_values: list[np.ndarray] = []
             y_values: list[np.ndarray] = []
             for result in results:
@@ -177,9 +210,8 @@ class PlotCanvas(FigureCanvas):
                 _annotate_no_visible_data(ax)
             ax.set_ylabel(f"d{axis}")
             ax.grid(True, alpha=0.25)
-            if idx == 1:
-                _legend_if_needed(ax, fontsize=8, ncols=2)
-        self.figure.axes[-1].set_xlabel("timestamp / sample")
+        axes[-1].set_xlabel("timestamp / sample")
+        self._apply_time_series_layout()
         self.draw()
 
     def plot_neighbor_mean_deviation(
@@ -205,8 +237,9 @@ class PlotCanvas(FigureCanvas):
         ]
         styles = ["-", "--", ":"]
 
+        axes = self._stacked_axes(3)
         for idx, axis in enumerate("xyz", start=1):
-            ax = self.figure.add_subplot(3, 1, idx)
+            ax = axes[idx - 1]
             x_values: list[np.ndarray] = []
             y_values: list[np.ndarray] = []
             for series_idx, (label, trajectory) in enumerate(series):
@@ -242,8 +275,8 @@ class PlotCanvas(FigureCanvas):
             ax.grid(True, alpha=0.25)
             if idx == 1:
                 ax.set_title("XYZ deviation from neighboring-frame mean")
-                _legend_if_needed(ax, fontsize=7, ncols=2)
-        self.figure.axes[-1].set_xlabel("timestamp / sample")
+        axes[-1].set_xlabel("timestamp / sample")
+        self._apply_time_series_layout()
         self.draw()
 
     def plot_metric_bars(
@@ -262,13 +295,15 @@ class PlotCanvas(FigureCanvas):
             ("acceleration_rms_ratio", "acc ratio"),
             ("jerk_rms_ratio", "jerk ratio"),
         ]
+        axes = self.figure.subplots(1, 3, squeeze=False)
         for idx, (key, title) in enumerate(metrics, start=1):
-            ax = self.figure.add_subplot(1, 3, idx)
+            ax = axes[0, idx - 1]
             values = [float(result.metrics.get(key, np.nan)) for result in visible_results]
             ax.bar(range(len(values)), values, color="#4C78A8")
             ax.set_title(title)
             ax.set_xticks(range(len(labels)), labels, rotation=75, ha="right", fontsize=7)
             ax.grid(True, axis="y", alpha=0.25)
+        self._apply_bar_layout()
         self.draw()
 
     def plot_dimension_ratios(
@@ -298,6 +333,7 @@ class PlotCanvas(FigureCanvas):
         ax.set_ylabel("ratio")
         ax.grid(True, axis="y", alpha=0.25)
         ax.legend()
+        self._apply_bar_layout()
         self.draw()
 
 
@@ -318,10 +354,27 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._load_default_filters()
 
+    def _persist_input_state(self) -> None:
+        try:
+            selected_path = None
+            row = self.input_table.currentRow()
+            if 0 <= row < len(self.input_paths):
+                selected_path = self.input_paths[row]
+            _write_gui_state(
+                recent_input_files=self.input_paths,
+                selected_input_file=selected_path,
+            )
+        except Exception as exc:
+            self.statusBar().showMessage(f"Could not save GUI input state: {exc}", 5000)
+
     def _build_actions(self) -> None:
         open_action = QAction("Add Files", self)
         open_action.triggered.connect(self.add_files)
         self.addAction(open_action)
+
+    def closeEvent(self, event: Any) -> None:
+        self._persist_input_state()
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         root = QSplitter(Qt.Horizontal)
@@ -504,7 +557,7 @@ class MainWindow(QMainWindow):
             return
         paths: list[Path] = []
         for pattern in ("*.csv", "*.json", "*.npy", "*.npz"):
-            paths.extend(Path(directory).glob(pattern))
+            paths.extend(Path(directory).rglob(pattern))
         paths = [path for path in sorted(paths) if path.name.lower() != "manifest.csv"]
         self._append_inputs(paths)
 
@@ -514,6 +567,7 @@ class MainWindow(QMainWindow):
         self.raw = None
         self.results.clear()
         self.update_results()
+        self._persist_input_state()
 
     def choose_reference(self) -> None:
         start_dir = self.reference_edit.text().strip()
@@ -717,6 +771,7 @@ class MainWindow(QMainWindow):
         self.update_plot()
 
     def _append_inputs(self, paths: list[Path]) -> None:
+        added = False
         for path in paths:
             if path in self.input_paths:
                 continue
@@ -727,6 +782,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Skipped Input", f"{path}\n{exc}")
                 continue
             self.input_paths.append(path)
+            added = True
             row = self.input_table.rowCount()
             self.input_table.insertRow(row)
             name_item = QTableWidgetItem(path.name)
@@ -736,6 +792,9 @@ class MainWindow(QMainWindow):
             self.input_table.setItem(row, 2, QTableWidgetItem(f"{metrics['path_length']:.6g}"))
         if self.input_table.rowCount() and not self.input_table.selectedItems():
             self.input_table.selectRow(0)
+        if added:
+            self._restore_selected_input_from_config()
+            self._persist_input_state()
 
     def _load_selected_input(self) -> None:
         row = self.input_table.currentRow()
@@ -759,6 +818,16 @@ class MainWindow(QMainWindow):
                 ]
             )
         )
+        self._persist_input_state()
+
+    def _restore_selected_input_from_config(self) -> None:
+        config = _gui_config()
+        if config is None or config.selected_input_file is None:
+            return
+        for row, path in enumerate(self.input_paths):
+            if path.resolve() == config.selected_input_file.resolve():
+                self.input_table.selectRow(row)
+                return
 
     def _load_default_filters(self) -> None:
         self.filter_table.setRowCount(0)
@@ -973,11 +1042,36 @@ def _parse_patterns(value: Any, *, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
-def _resolve_configured_path(raw_path: str, *, config_path: Path) -> Path:
+def _resolve_configured_path(
+    raw_path: str,
+    *,
+    config_path: Path,
+    prefer_existing: bool = False,
+) -> Path:
     expanded = Path(os.path.expanduser(raw_path))
     if expanded.is_absolute():
         return expanded.resolve()
-    return (config_path.parent / expanded).resolve()
+    primary = (config_path.parent / expanded).resolve()
+    if not prefer_existing:
+        return primary
+
+    candidates = [primary]
+    for base in (_project_root(), _resource_root()):
+        candidate = (base / expanded).resolve()
+        if candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return primary
+
+
+def _serialize_configured_path(path: Path, *, config_path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(config_path.parent.resolve()))
+    except ValueError:
+        return str(resolved)
 
 
 def _builtin_input_roots() -> list[GuiInputRoot]:
@@ -1072,14 +1166,22 @@ def _load_gui_config() -> GuiConfig | None:
                 )
             input_roots.append(
                 GuiInputRoot(
-                    _resolve_configured_path(raw_path, config_path=config_path),
+                    _resolve_configured_path(
+                        raw_path,
+                        config_path=config_path,
+                        prefer_existing=True,
+                    ),
                     _parse_patterns(item.get("patterns"), default=("*.csv",)),
                 )
             )
 
     raw_reference = str(raw.get("reference_path") or "").strip()
     reference_path = (
-        _resolve_configured_path(raw_reference, config_path=config_path)
+        _resolve_configured_path(
+            raw_reference,
+            config_path=config_path,
+            prefer_existing=True,
+        )
         if raw_reference
         else None
     )
@@ -1093,8 +1195,42 @@ def _load_gui_config() -> GuiConfig | None:
 
     try:
         auto_load_inputs = _parse_bool(raw.get("auto_load_inputs"), default=True)
+        restore_recent_inputs = _parse_bool(raw.get("restore_recent_inputs"), default=True)
     except ValueError as exc:
         raise RuntimeError(f"invalid GUI config: {config_path}\n{exc}") from exc
+
+    recent_input_files: list[Path] = []
+    raw_recent_input_files = raw.get("recent_input_files")
+    if raw_recent_input_files is not None:
+        if not isinstance(raw_recent_input_files, list):
+            raise RuntimeError(f"invalid GUI config: {config_path}\nrecent_input_files must be a list")
+        for index, item in enumerate(raw_recent_input_files):
+            raw_path = str(item or "").strip()
+            if not raw_path:
+                continue
+            try:
+                resolved = _resolve_configured_path(
+                    raw_path,
+                    config_path=config_path,
+                    prefer_existing=True,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"invalid GUI config: {config_path}\nrecent_input_files[{index}] is invalid: {exc}"
+                ) from exc
+            if resolved.exists():
+                recent_input_files.append(resolved)
+
+    raw_selected_input = str(raw.get("selected_input_file") or "").strip()
+    selected_input_file = None
+    if raw_selected_input:
+        resolved = _resolve_configured_path(
+            raw_selected_input,
+            config_path=config_path,
+            prefer_existing=True,
+        )
+        if resolved.exists():
+            selected_input_file = resolved
 
     return GuiConfig(
         config_path=config_path,
@@ -1102,6 +1238,10 @@ def _load_gui_config() -> GuiConfig | None:
         reference_path=reference_path,
         output_dir=output_dir,
         auto_load_inputs=auto_load_inputs,
+        restore_recent_inputs=restore_recent_inputs,
+        recent_input_files=tuple(recent_input_files),
+        selected_input_file=selected_input_file,
+        raw_data=dict(raw),
     )
 
 
@@ -1110,6 +1250,40 @@ def _gui_config() -> GuiConfig | None:
     if _gui_config_cache is _GUI_CONFIG_UNSET:
         _gui_config_cache = _load_gui_config()
     return _gui_config_cache if isinstance(_gui_config_cache, GuiConfig) else None
+
+
+def _write_gui_state(
+    *,
+    recent_input_files: list[Path],
+    selected_input_file: Path | None,
+) -> None:
+    config = _gui_config()
+    if config is None:
+        return
+
+    existing_files = [path.resolve() for path in recent_input_files if path.exists()]
+    selected = selected_input_file.resolve() if selected_input_file is not None and selected_input_file.exists() else None
+    data = dict(config.raw_data)
+    data["recent_input_files"] = [
+        _serialize_configured_path(path, config_path=config.config_path) for path in existing_files
+    ]
+    data["selected_input_file"] = (
+        _serialize_configured_path(selected, config_path=config.config_path) if selected is not None else ""
+    )
+    config.config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    global _gui_config_cache
+    _gui_config_cache = GuiConfig(
+        config_path=config.config_path,
+        input_roots=config.input_roots,
+        reference_path=config.reference_path,
+        output_dir=config.output_dir,
+        auto_load_inputs=config.auto_load_inputs,
+        restore_recent_inputs=config.restore_recent_inputs,
+        recent_input_files=tuple(existing_files),
+        selected_input_file=selected,
+        raw_data=data,
+    )
 
 
 def _project_root() -> Path:
@@ -1182,8 +1356,13 @@ def _default_reference_text() -> str:
 
 def _default_input_files() -> list[Path]:
     config = _gui_config()
-    if config is not None and not config.auto_load_inputs:
-        return []
+    if config is not None:
+        if config.restore_recent_inputs and config.recent_input_files:
+            existing_recent = [path for path in config.recent_input_files if path.exists()]
+            if existing_recent:
+                return existing_recent
+        if not config.auto_load_inputs:
+            return []
 
     for root in _configured_input_roots():
         files: list[Path] = []

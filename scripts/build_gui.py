@@ -76,6 +76,7 @@ def main() -> int:
     if not packaged.exists():
         raise FileNotFoundError(f"packaged executable was not created: {packaged}")
 
+    config_target: Path | None = None
     if CONFIG_FILE.exists():
         config_target = _packaged_config_path(distpath, packaged)
         config_target.parent.mkdir(parents=True, exist_ok=True)
@@ -85,6 +86,8 @@ def main() -> int:
     if not args.skip_smoke_test:
         smoke_env = env.copy()
         smoke_env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        if config_target is not None:
+            smoke_env["RT_FILTER_GUI_CONFIG"] = str(config_target)
         _run([str(packaged), "--smoke-test"], cwd=ROOT, env=smoke_env)
 
     print(f"built: {packaged}")
