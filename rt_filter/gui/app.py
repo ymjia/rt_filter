@@ -17,7 +17,7 @@ from rt_filter.analysis import (
     parse_filter_specs,
 )
 from rt_filter.evaluation import trajectory_metrics
-from rt_filter.filters import available_filters
+from rt_filter.filters import available_filters, cpp_demo_available
 from rt_filter.gui.chart_data import complete_neighbor_slice, neighbor_mean_deviation
 from rt_filter.io import read_trajectory
 from rt_filter.paraview_export import write_paraview_comparison_script
@@ -489,6 +489,9 @@ class MainWindow(QMainWindow):
     def _filter_group(self) -> QGroupBox:
         group = QGroupBox("Filters")
         layout = QVBoxLayout(group)
+        self.cpp_filter_status = QLabel(self._cpp_filter_status_text())
+        self.cpp_filter_status.setWordWrap(True)
+        layout.addWidget(self.cpp_filter_status)
         self.filter_table = QTableWidget(0, 3)
         self.filter_table.setHorizontalHeaderLabels(["Use", "Algorithm", "Params JSON"])
         self.filter_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -884,7 +887,12 @@ class MainWindow(QMainWindow):
 
     def _load_default_filters(self) -> None:
         self.filter_table.setRowCount(0)
-        presets = [
+        presets = self._default_filter_presets()
+        for algorithm, params in presets:
+            self._add_filter_row(algorithm, params, enabled=True)
+
+    def _default_filter_presets(self) -> list[tuple[str, Any]]:
+        presets: list[tuple[str, Any]] = [
             ("moving_average", {"window": [3, 5, 9]}),
             ("savgol", {"window": [5, 9], "polyorder": 2}),
             ("exponential", {"alpha": [0.25, 0.4]}),
@@ -933,8 +941,42 @@ class MainWindow(QMainWindow):
                 ],
             ),
         ]
-        for algorithm, params in presets:
-            self._add_filter_row(algorithm, params, enabled=True)
+        if cpp_demo_available():
+            presets.extend(
+                [
+                    (
+                        "ukf-cpp",
+                        {
+                            "motion_model": "constant_velocity",
+                            "process_noise": 1000.0,
+                            "measurement_noise": 0.001,
+                            "initial_linear_velocity": [0.0, 0.0, 0.0],
+                            "initial_angular_velocity": [0.0, 0.0, 0.0],
+                        },
+                    ),
+                    (
+                        "one_euro_z-cpp",
+                        {
+                            "min_cutoff": 0.02,
+                            "beta": 6.0,
+                            "d_cutoff": 2.0,
+                            "derivative_deadband": 1.0,
+                        },
+                    ),
+                ]
+            )
+        return presets
+
+    def _cpp_filter_status_text(self) -> str:
+        if cpp_demo_available():
+            return (
+                "C++ filters are ready in this GUI session: "
+                "`ukf-cpp` and `one_euro_z-cpp` can be checked directly."
+            )
+        return (
+            "C++ filters are not available yet. Build `rt_filter_cpp_demo` first, then "
+            "`ukf-cpp` and `one_euro_z-cpp` will appear in the presets and algorithm list."
+        )
 
     def _add_filter_row(self, algorithm: str, params: Any, *, enabled: bool) -> None:
         row = self.filter_table.rowCount()

@@ -52,6 +52,8 @@ rt-filter catalog
 | `ukf` | `motion_model`, `process_noise`, `measurement_noise`, `initial_covariance`, `initial_velocity`, `initial_linear_velocity`, `initial_angular_velocity`, `alpha`, `beta`, `kappa` | 无迹 Kalman 滤波；对平移和相对旋转向量使用匀速或匀加速状态预测 | 位姿变化连续、测量噪声较大、希望显式引入运动连续性约束的轨迹 | 当前仅使用位姿测量；若无关节/控制量，复杂机械臂运动学模型无法真正发挥 |
 | `one_euro_z` | `min_cutoff`, `beta`, `d_cutoff`, `derivative_deadband`, `sample_rate_hz` | Z 方向 One Euro 自适应低通；只改 Z，保留 X/Y 和姿态 | Z 噪声明显大于 X/Y、需要在线实时且减少拖影的静止或慢速转向场景 | 只处理 Z 随机噪声；`min_cutoff` 太低或 `derivative_deadband` 太大仍会产生滞后 |
 
+如果已经通过 `python3 scripts/build_cpp_demo.py` 构建了独立 C++ demo，GUI 和分析链路里还会出现 `ukf-cpp` 与 `one_euro_z-cpp`。这两个条目会由 Python 调用 `rt_filter_cpp_demo` 可执行程序，并直接导入该程序写出的轨迹结果与每帧耗时数据。
+
 ### `moving_average`
 
 `moving_average` 是最直观的平滑方法。`window` 表示窗口长度，值越大，抖动压制越强，但轨迹细节损失也越多。当前位置使用前后邻域的样本平均，因此它不是严格在线算法。

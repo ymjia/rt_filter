@@ -5,7 +5,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from rt_filter.evaluation import trajectory_metrics
-from rt_filter.filters import run_filter
+from rt_filter.filters import available_filters, cpp_demo_available, run_filter, run_filter_timed
 from rt_filter.se3 import make_poses
 from rt_filter.trajectory import Trajectory
 
@@ -52,6 +52,12 @@ def test_all_filters_keep_shape():
         filtered = run_filter(name, traj, params)
         assert filtered.poses.shape == traj.poses.shape
         assert filtered.timestamps is not None
+
+
+def test_cpp_filters_are_listed():
+    filters = available_filters()
+    assert "one_euro_z-cpp" in filters
+    assert "ukf-cpp" in filters
 
 
 def test_one_euro_z_reduces_z_noise_without_changing_xy_or_rotation():
@@ -125,3 +131,34 @@ def test_ukf_rejects_invalid_initial_velocity_shape():
                 "initial_linear_velocity": [1.0, 2.0],
             },
         )
+
+
+@pytest.mark.skipif(not cpp_demo_available(), reason="C++ demo executable is not built")
+@pytest.mark.parametrize(
+    ("name", "params"),
+    [
+        (
+            "one_euro_z-cpp",
+            {"min_cutoff": 0.02, "beta": 6.0, "d_cutoff": 2.0, "derivative_deadband": 1.0},
+        ),
+        (
+            "ukf_cpp",
+            {
+                "motion_model": "constant_velocity",
+                "process_noise": 1000.0,
+                "measurement_noise": 0.001,
+                "initial_linear_velocity": [0.0, 0.0, 0.0],
+                "initial_angular_velocity": [0.0, 0.0, 0.0],
+            },
+        ),
+    ],
+)
+def test_cpp_filters_can_be_run_via_python_adapter(name: str, params: dict[str, object]):
+    traj = _noisy_static()
+
+    timed = run_filter_timed(name, traj, params)
+
+    assert timed.trajectory.poses.shape == traj.poses.shape
+    assert timed.per_pose_time_ns.shape == (traj.count,)
+    assert timed.total_time_ns >= 0
+    assert timed.trajectory.metadata["backend"] == "cpp_demo"

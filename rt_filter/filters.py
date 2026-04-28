@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import csv
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter_ns
 from typing import Any
 
@@ -15,6 +23,7 @@ from rt_filter.se3 import (
     relative_rotvecs,
     rotations_from_relative_rotvecs,
 )
+from rt_filter.io import read_trajectory, write_trajectory
 from rt_filter.trajectory import Trajectory
 
 
@@ -37,8 +46,47 @@ class TimedFilterRun:
     total_time_ns: int
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CPP_DEMO_ENV_VAR = "RT_FILTER_CPP_DEMO_EXE"
+CPP_FILTER_SPECS: dict[str, dict[str, Any]] = {
+    "one_euro_z_cpp": {
+        "alias": "one_euro_z-cpp",
+        "cpp_algorithm": "one_euro_z",
+        "result_suffix": "one_euro_z_cpp",
+        "description": (
+            "Run the standalone C++ One Euro Z executable and import its trajectory "
+            "and timing outputs for GUI analysis."
+        ),
+        "defaults": {
+            "min_cutoff": 0.02,
+            "beta": 6.0,
+            "d_cutoff": 2.0,
+            "derivative_deadband": 1.0,
+            "sample_rate_hz": 80.0,
+        },
+    },
+    "ukf_cpp": {
+        "alias": "ukf-cpp",
+        "cpp_algorithm": "ukf",
+        "result_suffix": "ukf_cpp",
+        "description": (
+            "Run the standalone C++ UKF executable and import its trajectory and "
+            "timing outputs for GUI analysis."
+        ),
+        "defaults": {
+            "motion_model": "constant_velocity",
+            "process_noise": 1000.0,
+            "measurement_noise": 0.001,
+            "initial_covariance": 1.0,
+            "initial_linear_velocity": [0.0, 0.0, 0.0],
+            "initial_angular_velocity": [0.0, 0.0, 0.0],
+        },
+    },
+}
+
+
 def available_filters() -> dict[str, FilterInfo]:
-    return {
+    filters = {
         "moving_average": FilterInfo(
             name="moving_average",
             description="Sliding-window translation average and SO(3) mean.",
@@ -86,6 +134,17 @@ def available_filters() -> dict[str, FilterInfo]:
             },
         ),
     }
+    filters.update(
+        {
+            spec["alias"]: FilterInfo(
+                name=spec["alias"],
+                description=str(spec["description"]),
+                defaults=dict(spec["defaults"]),
+            )
+            for spec in CPP_FILTER_SPECS.values()
+        }
+    )
+    return filters
 
 
 def run_filter(
@@ -95,6 +154,8 @@ def run_filter(
 ) -> Trajectory:
     normalized = name.lower().replace("-", "_")
     params = {} if params is None else dict(params)
+    if _cpp_filter_spec(normalized) is not None:
+        return _run_cpp_filter_timed(normalized, trajectory, params).trajectory
     registry: dict[str, FilterFunc] = {
         "moving_average": moving_average_filter,
         "savgol": savgol_filter_trajectory,
@@ -118,6 +179,8 @@ def run_filter_timed(
 ) -> TimedFilterRun:
     normalized = name.lower().replace("-", "_")
     params = {} if params is None else dict(params)
+    if _cpp_filter_spec(normalized) is not None:
+        return _run_cpp_filter_timed(normalized, trajectory, params)
     registry: dict[str, Callable[..., TimedFilterRun]] = {
         "moving_average": _run_moving_average_timed,
         "savgol": _run_savgol_timed,
@@ -132,6 +195,272 @@ def run_filter_timed(
         known = ", ".join(sorted(available_filters()))
         raise ValueError(f"unknown filter '{name}', available filters: {known}")
     return registry[normalized](trajectory, **params)
+
+
+def _cpp_filter_spec(name: str) -> dict[str, Any] | None:
+    normalized = name.lower().replace("-", "_")
+    return CPP_FILTER_SPECS.get(normalized)
+
+
+def _run_cpp_filter_timed(
+    name: str,
+    traj: Trajectory,
+    params: dict[str, Any],
+) -> TimedFilterRun:
+    spec = _cpp_filter_spec(name)
+    if spec is None:
+        raise ValueError(f"unknown C++ filter '{name}'")
+
+    executable = _find_cpp_demo_executable()
+    effective_params = dict(spec["defaults"])
+    effective_params.update(params)
+
+    with tempfile.TemporaryDirectory(prefix="rt_filter_cpp_") as tmp_dir_name:
+        tmp_dir = Path(tmp_dir_name)
+        input_path = tmp_dir / "input.csv"
+        output_path = tmp_dir / "output.csv"
+        write_trajectory(traj, input_path)
+
+        command = [
+            str(executable),
+            "--algorithm",
+            str(spec["cpp_algorithm"]),
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+        ]
+        command.extend(_cpp_filter_cli_args(str(spec["cpp_algorithm"]), effective_params))
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(
+                f"{spec['alias']} failed via {executable.name}: {detail or f'exit code {completed.returncode}'}"
+            )
+
+        timing_path = output_path.with_suffix(".timing.csv")
+        metrics_path = output_path.with_suffix(".metrics.json")
+        if not output_path.exists():
+            raise RuntimeError(f"{spec['alias']} did not produce output: {output_path}")
+        if not timing_path.exists():
+            raise RuntimeError(f"{spec['alias']} did not produce timing output: {timing_path}")
+
+        filtered = read_trajectory(output_path)
+        if filtered.count != traj.count:
+            raise RuntimeError(
+                f"{spec['alias']} returned {filtered.count} poses for {traj.count} input poses"
+            )
+        per_pose_time_ns = _read_cpp_timing_series(timing_path, expected_count=filtered.count)
+        metrics = _read_cpp_metrics(metrics_path)
+        total_time_ns = int(metrics.get("compute_total_ns", per_pose_time_ns.sum(dtype=np.int64)))
+
+        result = traj.copy_with(
+            poses=filtered.poses,
+            timestamps=filtered.timestamps if filtered.timestamps is not None else traj.timestamps,
+            name=f"{traj.name}__{spec['result_suffix']}",
+            metadata={
+                "filter": spec["alias"],
+                "params": effective_params,
+                "backend": "cpp_demo",
+                "cpp_demo_executable": str(executable),
+                "cpp_timing_summary": _cpp_timing_summary(metrics),
+            },
+        )
+        return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _find_cpp_demo_executable() -> Path:
+    searched: list[Path] = []
+    candidates: list[Path] = []
+    executable_name = "rt_filter_cpp_demo.exe" if sys.platform.startswith("win") else "rt_filter_cpp_demo"
+
+    override = os.environ.get(CPP_DEMO_ENV_VAR)
+    if override:
+        candidates.append(Path(override).expanduser())
+
+    if getattr(sys, "frozen", False):
+        bundled_root = getattr(sys, "_MEIPASS", None)
+        if bundled_root:
+            candidates.append(Path(bundled_root) / executable_name)
+        executable_path = Path(sys.executable).resolve()
+        candidates.append(executable_path.parent / executable_name)
+        if sys.platform == "darwin" and executable_path.parent.name == "MacOS":
+            candidates.append(executable_path.parent.parent / "Resources" / executable_name)
+
+    if sys.platform.startswith("win"):
+        candidates.append(REPO_ROOT / "build" / "cpp_demo" / "windows-vs2022" / "Release" / executable_name)
+    elif sys.platform == "darwin":
+        candidates.append(REPO_ROOT / "build" / "cpp_demo" / "macos-xcode" / "Release" / executable_name)
+
+    search_root = REPO_ROOT / "build" / "cpp_demo"
+    if search_root.exists():
+        candidates.extend(sorted(search_root.rglob(executable_name)))
+        if executable_name != "rt_filter_cpp_demo":
+            candidates.extend(sorted(search_root.rglob("rt_filter_cpp_demo")))
+        if executable_name != "rt_filter_cpp_demo.exe":
+            candidates.extend(sorted(search_root.rglob("rt_filter_cpp_demo.exe")))
+
+    on_path = shutil.which("rt_filter_cpp_demo")
+    if on_path:
+        candidates.append(Path(on_path))
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        searched.append(resolved)
+        if resolved.is_file():
+            return resolved
+
+    build_hint = (
+        "py -3 scripts\\build_cpp_demo.py"
+        if sys.platform.startswith("win")
+        else "python3 scripts/build_cpp_demo.py"
+    )
+    searched_text = ", ".join(str(path) for path in searched) or "<none>"
+    raise FileNotFoundError(
+        "C++ filter executable `rt_filter_cpp_demo` was not found. "
+        f"Searched: {searched_text}. Build it with `{build_hint}` or set `{CPP_DEMO_ENV_VAR}`."
+    )
+
+
+def cpp_demo_available() -> bool:
+    try:
+        _find_cpp_demo_executable()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _cpp_filter_cli_args(cpp_algorithm: str, params: dict[str, Any]) -> list[str]:
+    command: list[str] = []
+    if "sample_rate_hz" in params:
+        command.extend(["--sample-rate-hz", _format_cli_scalar(params["sample_rate_hz"])])
+    if bool(params.get("strict_timestamps", False)):
+        command.append("--strict-timestamps")
+
+    if cpp_algorithm == "one_euro_z":
+        command.extend(
+            [
+                "--min-cutoff",
+                _format_cli_scalar(params.get("min_cutoff", 0.02)),
+                "--beta",
+                _format_cli_scalar(params.get("beta", 6.0)),
+                "--d-cutoff",
+                _format_cli_scalar(params.get("d_cutoff", 2.0)),
+                "--derivative-deadband",
+                _format_cli_scalar(params.get("derivative_deadband", 1.0)),
+            ]
+        )
+        return command
+
+    motion_model = str(params.get("motion_model", "constant_velocity")).lower().replace("-", "_")
+    if motion_model in {"cv", "constant_velocity"}:
+        canonical_motion_model = "constant_velocity"
+    elif motion_model in {"ca", "constant_acceleration"}:
+        canonical_motion_model = "constant_acceleration"
+    else:
+        raise ValueError("motion_model must be constant_velocity or constant_acceleration")
+    command.extend(
+        [
+            "--motion-model",
+            canonical_motion_model,
+            "--process-noise",
+            _format_cli_scalar(params.get("process_noise", 1000.0)),
+            "--measurement-noise",
+            _format_cli_scalar(params.get("measurement_noise", 0.001)),
+            "--initial-covariance",
+            _format_cli_scalar(params.get("initial_covariance", 1.0)),
+        ]
+    )
+
+    for flag, key in (("--alpha", "alpha"), ("--ukf-beta", "beta"), ("--kappa", "kappa")):
+        if key in params:
+            command.extend([flag, _format_cli_scalar(params[key])])
+
+    if params.get("initial_velocity") is not None:
+        command.extend(
+            [
+                "--initial-velocity",
+                _format_cli_vector(_validate_vector(params["initial_velocity"], 6, "initial_velocity")),
+            ]
+        )
+        return command
+
+    linear_velocity = params.get("initial_linear_velocity")
+    angular_velocity = params.get("initial_angular_velocity")
+    if linear_velocity is not None:
+        command.extend(
+            [
+                "--initial-linear-velocity",
+                _format_cli_vector(
+                    _validate_vector(linear_velocity, 3, "initial_linear_velocity")
+                ),
+            ]
+        )
+    if angular_velocity is not None:
+        command.extend(
+            [
+                "--initial-angular-velocity",
+                _format_cli_vector(
+                    _validate_vector(angular_velocity, 3, "initial_angular_velocity")
+                ),
+            ]
+        )
+    return command
+
+
+def _read_cpp_timing_series(path: Path, *, expected_count: int) -> ArrayI:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        values = [int(row["compute_time_ns"]) for row in reader]
+    per_pose_time_ns = np.asarray(values, dtype=np.int64)
+    if per_pose_time_ns.shape != (expected_count,):
+        raise RuntimeError(
+            f"unexpected timing series length from {path}: got {per_pose_time_ns.shape[0]}, "
+            f"expected {expected_count}"
+        )
+    return per_pose_time_ns
+
+
+def _read_cpp_metrics(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _cpp_timing_summary(metrics: dict[str, Any]) -> dict[str, Any]:
+    summary_keys = (
+        "frames",
+        "has_timestamps",
+        "compute_total_ns",
+        "compute_total_ms",
+        "compute_mean_us",
+        "compute_p95_us",
+        "compute_max_us",
+    )
+    return {key: metrics[key] for key in summary_keys if key in metrics}
+
+
+def _format_cli_scalar(value: Any) -> str:
+    if isinstance(value, (np.floating, float)):
+        return f"{float(value):.17g}"
+    if isinstance(value, (np.integer, int)):
+        return str(int(value))
+    return str(value)
+
+
+def _format_cli_vector(values: ArrayLike) -> str:
+    vector = np.asarray(values, dtype=float).reshape(-1)
+    return ",".join(f"{float(value):.17g}" for value in vector)
 
 
 def moving_average_filter(traj: Trajectory, window: int = 5) -> Trajectory:
