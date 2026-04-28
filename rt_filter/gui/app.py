@@ -671,7 +671,16 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(0)
+
+        content_splitter = QSplitter(Qt.Horizontal)
+        content_splitter.setChildrenCollapsible(False)
+
+        controls_panel = QWidget()
+        controls_layout = QVBoxLayout(controls_panel)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+
         chart_row = QHBoxLayout()
         chart_row.setContentsMargins(0, 0, 0, 0)
         chart_row.setSpacing(8)
@@ -688,13 +697,13 @@ class MainWindow(QMainWindow):
             ]
         )
         self.chart_combo.currentIndexChanged.connect(self._on_chart_changed)
-        chart_row.addWidget(self.chart_combo)
+        self.chart_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        chart_row.addWidget(self.chart_combo, 1)
         self.pop_out_chart_button = QPushButton("Pop Out")
         self.pop_out_chart_button.setToolTip("Open a larger interactive matplotlib chart window.")
         self.pop_out_chart_button.clicked.connect(self.open_detached_plot_window)
         chart_row.addWidget(self.pop_out_chart_button)
-        chart_row.addStretch(1)
-        layout.addLayout(chart_row)
+        controls_layout.addLayout(chart_row)
 
         curve_group = QGroupBox("Curves")
         curve_layout = QVBoxLayout(curve_group)
@@ -720,13 +729,18 @@ class MainWindow(QMainWindow):
         self.curve_table.verticalHeader().setVisible(False)
         self.curve_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.curve_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.curve_table.setMaximumHeight(170)
-        curve_layout.addWidget(self.curve_table)
-        layout.addWidget(curve_group)
+        self.curve_table.setMaximumHeight(16777215)
+        curve_layout.addWidget(self.curve_table, 1)
+        controls_layout.addWidget(curve_group, 1)
 
         self.canvas = PlotCanvas()
         self.canvas.plot_empty("No results")
-        layout.addWidget(self.canvas, 1)
+        content_splitter.addWidget(controls_panel)
+        content_splitter.addWidget(self.canvas)
+        content_splitter.setStretchFactor(0, 1)
+        content_splitter.setStretchFactor(1, 2)
+        content_splitter.setSizes([360, 720])
+        layout.addWidget(content_splitter, 1)
         return panel
 
     def add_files(self) -> None:
