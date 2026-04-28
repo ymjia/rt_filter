@@ -429,11 +429,14 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QSplitter(Qt.Horizontal)
         root.addWidget(self._left_panel())
-        root.addWidget(self._center_panel())
-        root.addWidget(self._right_panel())
+        analysis_stack = QSplitter(Qt.Vertical)
+        analysis_stack.addWidget(self._center_panel())
+        analysis_stack.addWidget(self._right_panel())
+        analysis_stack.setStretchFactor(0, 1)
+        analysis_stack.setStretchFactor(1, 2)
+        root.addWidget(analysis_stack)
         root.setStretchFactor(0, 0)
         root.setStretchFactor(1, 1)
-        root.setStretchFactor(2, 2)
         self.setCentralWidget(root)
         self.statusBar().showMessage("Ready")
 
