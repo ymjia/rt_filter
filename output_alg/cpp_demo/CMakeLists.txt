@@ -10,8 +10,11 @@ endif()
 find_package(Eigen3 REQUIRED)
 
 add_library(output_alg_filters
+    ../filter_timing.hpp
     ../one_euro_z.cpp
+    ../one_euro_z.hpp
     ../ukf.cpp
+    ../ukf.hpp
 )
 target_include_directories(output_alg_filters PUBLIC ${CMAKE_CURRENT_LIST_DIR}/..)
 target_link_libraries(output_alg_filters PUBLIC Eigen3::Eigen)
@@ -24,7 +27,15 @@ target_compile_features(rt_filter_cpp_demo PRIVATE cxx_std_14)
 set_target_properties(rt_filter_cpp_demo PROPERTIES CXX_EXTENSIONS OFF)
 
 source_group(TREE ${CMAKE_CURRENT_LIST_DIR} FILES main.cpp)
-source_group(TREE ${CMAKE_CURRENT_LIST_DIR}/.. FILES ../one_euro_z.cpp ../ukf.cpp)
+source_group(
+    TREE ${CMAKE_CURRENT_LIST_DIR}/..
+    FILES
+        ../filter_timing.hpp
+        ../one_euro_z.cpp
+        ../one_euro_z.hpp
+        ../ukf.cpp
+        ../ukf.hpp
+)
 
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT rt_filter_cpp_demo)
 

@@ -2,6 +2,7 @@
 #include <array>
 #include <cerrno>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -142,6 +143,15 @@ std::string ParentPath(const std::string& path) {
         return path.substr(0, 3);
     }
     return path.substr(0, separator);
+}
+
+std::string ReplaceExtensionWithSuffix(const std::string& path, const std::string& suffix) {
+    const std::size_t separator = path.find_last_of("/\\");
+    const std::size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos || (separator != std::string::npos && dot < separator)) {
+        return path + suffix;
+    }
+    return path.substr(0, dot) + suffix;
 }
 
 void MakeDirectory(const std::string& directory) {
@@ -459,6 +469,34 @@ CsvTrajectory ReadCsvTrajectory(const std::string& path) {
     return trajectory;
 }
 
+std::string JsonEscape(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char ch : value) {
+        switch (ch) {
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            escaped += ch;
+            break;
+        }
+    }
+    return escaped;
+}
+
 void WriteCsvTrajectory(
     const std::string& path,
     const std::vector<RigidMatrix>& rigids,
@@ -519,39 +557,82 @@ void WriteCsvTrajectory(
     }
 }
 
-std::vector<RigidMatrix> RunRealtimeFrameFilter(
+void WriteTimingCsv(
+    const std::string& path,
+    const std::vector<std::int64_t>& per_pose_time_ns,
+    const std::vector<double>& timestamps,
+    bool has_timestamps) {
+    const std::string parent = ParentPath(path);
+    if (!parent.empty()) {
+        CreateDirectories(parent);
+    }
+
+    std::ofstream output(path.c_str());
+    if (!output) {
+        throw std::runtime_error("failed to open output: " + path);
+    }
+    output << std::setprecision(17);
+    output << "frame_index,timestamp,compute_time_ns,compute_time_us,compute_time_ms\n";
+    for (std::size_t i = 0; i < per_pose_time_ns.size(); ++i) {
+        const double elapsed_ns = static_cast<double>(per_pose_time_ns[i]);
+        output << i << ',';
+        if (has_timestamps) {
+            output << timestamps[i];
+        }
+        output << ',' << per_pose_time_ns[i] << ','
+               << elapsed_ns / 1000.0 << ',' << elapsed_ns / 1000000.0 << '\n';
+    }
+}
+
+void WriteMetricsJson(
+    const std::string& path,
+    const Options& options,
+    const CsvTrajectory& input,
+    const output_alg::TimedFilterTrajectoryResult& result,
+    const std::string& timing_path) {
+    const std::string parent = ParentPath(path);
+    if (!parent.empty()) {
+        CreateDirectories(parent);
+    }
+
+    const output_alg::TimingSummary timing =
+        output_alg::SummarizeTiming(result.per_pose_time_ns, result.total_time_ns);
+    std::ofstream output(path.c_str());
+    if (!output) {
+        throw std::runtime_error("failed to open output: " + path);
+    }
+    output << std::setprecision(17);
+    output << "{\n"
+           << "  \"algorithm\": \"" << JsonEscape(options.algorithm) << "\",\n"
+           << "  \"input_path\": \"" << JsonEscape(options.input) << "\",\n"
+           << "  \"output_path\": \"" << JsonEscape(options.output) << "\",\n"
+           << "  \"timing_path\": \"" << JsonEscape(timing_path) << "\",\n"
+           << "  \"frames\": " << result.rigids.size() << ",\n"
+           << "  \"has_timestamps\": " << (input.has_timestamps ? "true" : "false") << ",\n"
+           << "  \"compute_total_ns\": " << timing.total_time_ns << ",\n"
+           << "  \"compute_total_ms\": " << timing.total_time_ms << ",\n"
+           << "  \"compute_mean_us\": " << timing.mean_time_us << ",\n"
+           << "  \"compute_p95_us\": " << timing.p95_time_us << ",\n"
+           << "  \"compute_max_us\": " << timing.max_time_us << "\n"
+           << "}\n";
+}
+
+output_alg::TimedFilterTrajectoryResult RunRealtimeFrameFilterTimed(
     const Options& options,
     const CsvTrajectory& trajectory) {
     // 实时帧滤波入口：这里用 CSV 中的每一行模拟实时系统收到的一帧 RigidMatrix。
     // 关键点是滤波器对象只创建一次，并在循环中跨帧复用。这样 One Euro 的上一帧
     // 输出、UKF 的状态向量/协方差/参考姿态都会被保留下来。
-    std::vector<RigidMatrix> filtered;
-    filtered.reserve(trajectory.rigids.size());
-
-    auto timestamp_at = [&](std::size_t frame_index) -> output_alg::OptionalDouble {
-        if (!trajectory.has_timestamps) {
-            return output_alg::OptionalDouble();
-        }
-        return output_alg::OptionalDouble(trajectory.timestamps[frame_index]);
-    };
+    const std::vector<double>* timestamps =
+        trajectory.has_timestamps ? &trajectory.timestamps : nullptr;
 
     if (options.algorithm == "one_euro_z") {
         output_alg::OneEuroZRealtimeFilter filter(options.one_euro);
-        for (std::size_t i = 0; i < trajectory.rigids.size(); ++i) {
-            // 实时调用形式：当前帧输入 RigidMatrix，立即返回当前帧滤波后的 RigidMatrix。
-            const RigidMatrix filtered_frame = filter.Update(trajectory.rigids[i], timestamp_at(i));
-            filtered.push_back(filtered_frame);
-        }
-        return filtered;
+        return filter.FilterTrajectoryTimed(trajectory.rigids, timestamps, true);
     }
 
     output_alg::UkfRealtimeFilter filter(options.ukf);
-    for (std::size_t i = 0; i < trajectory.rigids.size(); ++i) {
-        // UKF 同样按帧调用 Update；外部系统拿到 filtered_frame 后即可更新界面或写出轨迹。
-        const RigidMatrix filtered_frame = filter.Update(trajectory.rigids[i], timestamp_at(i));
-        filtered.push_back(filtered_frame);
-    }
-    return filtered;
+    return filter.FilterTrajectoryTimed(trajectory.rigids, timestamps, true);
 }
 
 }  // namespace
@@ -562,9 +643,31 @@ int main(int argc, char** argv) {
         const CsvTrajectory input = ReadCsvTrajectory(options.input);
 
         // 实时接口演示：每读到一帧 RigidMatrix，就调用一次 Update 并得到滤波后的 RigidMatrix。
-        const std::vector<RigidMatrix> filtered = RunRealtimeFrameFilter(options, input);
-        WriteCsvTrajectory(options.output, filtered, input.timestamps, input.has_timestamps);
-        std::cout << "wrote " << options.output << " frames=" << filtered.size() << '\n';
+        const output_alg::TimedFilterTrajectoryResult filtered =
+            RunRealtimeFrameFilterTimed(options, input);
+        const std::string timing_output =
+            ReplaceExtensionWithSuffix(options.output, ".timing.csv");
+        const std::string metrics_output =
+            ReplaceExtensionWithSuffix(options.output, ".metrics.json");
+        const output_alg::TimingSummary timing =
+            output_alg::SummarizeTiming(filtered.per_pose_time_ns, filtered.total_time_ns);
+
+        WriteCsvTrajectory(options.output, filtered.rigids, input.timestamps, input.has_timestamps);
+        WriteTimingCsv(
+            timing_output,
+            filtered.per_pose_time_ns,
+            input.timestamps,
+            input.has_timestamps);
+        WriteMetricsJson(metrics_output, options, input, filtered, timing_output);
+
+        std::cout << "wrote " << options.output
+                  << " frames=" << filtered.rigids.size()
+                  << " timing=" << timing_output
+                  << " metrics=" << metrics_output
+                  << " mean_us=" << timing.mean_time_us
+                  << " p95_us=" << timing.p95_time_us
+                  << " max_us=" << timing.max_time_us
+                  << '\n';
         return 0;
     } catch (const std::exception& exc) {
         std::cerr << "error: " << exc.what() << '\n';

@@ -5,6 +5,12 @@ them on a trajectory CSV. The output CSV uses the same columns as the Python
 framework (`timestamp,x,y,z,qw,qx,qy,qz,m00..m33`), so it can be read by
 `rt_filter.io.read_trajectory` and evaluated with the current tools.
 
+Besides the filtered trajectory CSV, the demo now also writes:
+
+- `*.timing.csv`: per-pose compute time with `frame_index`, `timestamp`,
+  `compute_time_ns`, `compute_time_us`, `compute_time_ms`
+- `*.metrics.json`: total/mean/P95/max compute-time summary
+
 ## Cross-Platform Build
 
 The demo now supports both macOS and Windows through:
@@ -94,6 +100,12 @@ build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
   --initial-linear-velocity 0,0,0 \
   --initial-angular-velocity 0,0,0
 ```
+
+This command writes:
+
+- `outputs/cpp_demo/case11_ukf.csv`
+- `outputs/cpp_demo/case11_ukf.timing.csv`
+- `outputs/cpp_demo/case11_ukf.metrics.json`
 
 Windows:
 

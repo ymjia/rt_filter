@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -114,6 +115,18 @@ Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::Update(
     return filtered;
 }
 
+TimedRigidResult UkfRealtimeFilter::UpdateTimed(
+    const Sn3DAlgorithm::RigidMatrix& rigid,
+    OptionalDouble timestamp) {
+    const auto started = std::chrono::steady_clock::now();
+    TimedRigidResult result;
+    result.rigid = Update(rigid, timestamp);
+    result.elapsed_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started)
+                                 .count();
+    return result;
+}
+
 std::vector<Sn3DAlgorithm::RigidMatrix> UkfRealtimeFilter::FilterTrajectory(
     const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps,
@@ -138,6 +151,38 @@ std::vector<Sn3DAlgorithm::RigidMatrix> UkfRealtimeFilter::FilterTrajectory(
         }
     }
     return output;
+}
+
+TimedFilterTrajectoryResult UkfRealtimeFilter::FilterTrajectoryTimed(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
+    const std::vector<double>* timestamps,
+    bool reset) {
+    if (rigids.empty()) {
+        throw std::invalid_argument("rigids must contain at least one frame");
+    }
+    if (timestamps != nullptr && timestamps->size() != rigids.size()) {
+        throw std::invalid_argument("timestamps size must match rigids size");
+    }
+    if (reset) {
+        Reset();
+    }
+
+    TimedFilterTrajectoryResult result;
+    result.rigids.reserve(rigids.size());
+    result.per_pose_time_ns.reserve(rigids.size());
+
+    const auto started = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < rigids.size(); ++i) {
+        const TimedRigidResult timed =
+            timestamps != nullptr ? UpdateTimed(rigids[i], (*timestamps)[i]) : UpdateTimed(rigids[i]);
+        result.rigids.push_back(timed.rigid);
+        result.per_pose_time_ns.push_back(timed.elapsed_time_ns);
+    }
+    result.total_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started)
+                               .count();
+    FinalizePerPoseTimeNs(result.per_pose_time_ns, result.total_time_ns);
+    return result;
 }
 
 Sn3DAlgorithm::RigidMatrix UkfRealtimeFilter::FilterLatestFromHistory(
@@ -364,6 +409,14 @@ std::vector<Sn3DAlgorithm::RigidMatrix> FilterUkfTrajectory(
     UkfParameters params) {
     UkfRealtimeFilter filter(params);
     return filter.FilterTrajectory(rigids, timestamps, true);
+}
+
+TimedFilterTrajectoryResult FilterUkfTrajectoryTimed(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
+    const std::vector<double>* timestamps,
+    UkfParameters params) {
+    UkfRealtimeFilter filter(params);
+    return filter.FilterTrajectoryTimed(rigids, timestamps, true);
 }
 
 Sn3DAlgorithm::RigidMatrix FilterUkfLatestFromHistory(

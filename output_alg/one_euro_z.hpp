@@ -4,6 +4,7 @@
 #include <deque>
 #include <vector>
 
+#include "filter_timing.hpp"
 #include "optional_double.hpp"
 #include "RigidMatrix.h"
 
@@ -70,10 +71,21 @@ public:
         const Sn3DAlgorithm::RigidMatrix& rigid,
         OptionalDouble timestamp = OptionalDouble());
 
+    // 单帧实时接口的计时版本。返回本帧滤波结果和该帧计算耗时（ns）。
+    TimedRigidResult UpdateTimed(
+        const Sn3DAlgorithm::RigidMatrix& rigid,
+        OptionalDouble timestamp = OptionalDouble());
+
     // 整段轨迹接口。对每一帧顺序调用 Update，并返回与输入等长的滤波结果。
     // timestamps 为 nullptr 时使用固定采样率；非空时长度必须与 rigids 一致。
     // reset=true 表示处理前先从空状态开始，适合离线处理一整条新轨迹。
     std::vector<Sn3DAlgorithm::RigidMatrix> FilterTrajectory(
+        const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
+        const std::vector<double>* timestamps = nullptr,
+        bool reset = true);
+
+    // 整段轨迹接口的计时版本。返回逐帧滤波结果、逐帧耗时和总耗时（ns）。
+    TimedFilterTrajectoryResult FilterTrajectoryTimed(
         const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
         const std::vector<double>* timestamps = nullptr,
         bool reset = true);
@@ -106,6 +118,11 @@ private:
 // 无状态便捷函数：构造一个临时 OneEuroZRealtimeFilter，处理整段轨迹并返回结果。
 // 适合离线工具、demo、测试代码；实时场景建议直接长期持有 OneEuroZRealtimeFilter。
 std::vector<Sn3DAlgorithm::RigidMatrix> FilterOneEuroZTrajectory(
+    const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
+    const std::vector<double>* timestamps = nullptr,
+    OneEuroZParameters params = OneEuroZParameters{});
+
+TimedFilterTrajectoryResult FilterOneEuroZTrajectoryTimed(
     const std::vector<Sn3DAlgorithm::RigidMatrix>& rigids,
     const std::vector<double>* timestamps = nullptr,
     OneEuroZParameters params = OneEuroZParameters{});
