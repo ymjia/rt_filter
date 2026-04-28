@@ -432,8 +432,8 @@ class MainWindow(QMainWindow):
         analysis_stack = QSplitter(Qt.Vertical)
         analysis_stack.addWidget(self._center_panel())
         analysis_stack.addWidget(self._right_panel())
-        analysis_stack.setStretchFactor(0, 1)
-        analysis_stack.setStretchFactor(1, 2)
+        analysis_stack.setStretchFactor(0, 2)
+        analysis_stack.setStretchFactor(1, 3)
         root.addWidget(analysis_stack)
         root.setStretchFactor(0, 0)
         root.setStretchFactor(1, 1)
@@ -523,6 +523,8 @@ class MainWindow(QMainWindow):
     def _center_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
         self.tabs = QTabWidget()
 
         self.metric_table = QTableWidget(0, len(METRIC_COLUMNS))
@@ -542,11 +544,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tabs, 1)
 
         export_row = QHBoxLayout()
+        export_row.setContentsMargins(0, 0, 0, 0)
+        export_row.setSpacing(8)
         self.paraview_button = QPushButton("Generate ParaView Script")
         self.paraview_button.clicked.connect(self.generate_paraview_script)
+        self.paraview_button.setFixedHeight(28)
         export_row.addWidget(self.paraview_button)
         open_button = QPushButton("Open Output Dir")
         open_button.clicked.connect(self.open_output_dir)
+        open_button.setFixedHeight(28)
         export_row.addWidget(open_button)
         layout.addLayout(export_row)
         return panel
@@ -554,7 +560,11 @@ class MainWindow(QMainWindow):
     def _right_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         chart_row = QHBoxLayout()
+        chart_row.setContentsMargins(0, 0, 0, 0)
+        chart_row.setSpacing(8)
         chart_row.addWidget(QLabel("Chart"))
         self.chart_combo = QComboBox()
         self.chart_combo.addItems(
@@ -574,12 +584,18 @@ class MainWindow(QMainWindow):
 
         curve_group = QGroupBox("Curves")
         curve_layout = QVBoxLayout(curve_group)
+        curve_layout.setContentsMargins(8, 6, 8, 8)
+        curve_layout.setSpacing(4)
         curve_buttons = QHBoxLayout()
+        curve_buttons.setContentsMargins(0, 0, 0, 0)
+        curve_buttons.setSpacing(6)
         show_all_button = QPushButton("Show All")
         show_all_button.clicked.connect(self.show_all_curves)
+        show_all_button.setFixedHeight(28)
         curve_buttons.addWidget(show_all_button)
         hide_all_button = QPushButton("Hide All")
         hide_all_button.clicked.connect(self.hide_all_curves)
+        hide_all_button.setFixedHeight(28)
         curve_buttons.addWidget(hide_all_button)
         curve_buttons.addStretch(1)
         curve_layout.addLayout(curve_buttons)
@@ -942,6 +958,31 @@ class MainWindow(QMainWindow):
                         "beta": 4.0,
                         "d_cutoff": 1.0,
                         "derivative_deadband": 0.0,
+                    },
+                ],
+            ),
+            (
+                "adaptive_kalman_z",
+                [
+                    {
+                        "process_noise": 1e-12,
+                        "measurement_noise": 1e-5,
+                        "initial_covariance": 1.0,
+                        "motion_process_gain": 0.0,
+                        "velocity_deadband": 1.0,
+                        "innovation_scale": 20.0,
+                        "innovation_gate": 2.5,
+                        "max_measurement_scale": 100.0,
+                    },
+                    {
+                        "process_noise": 3e-12,
+                        "measurement_noise": 1e-5,
+                        "initial_covariance": 1.0,
+                        "motion_process_gain": 0.0,
+                        "velocity_deadband": 1.0,
+                        "innovation_scale": 10.0,
+                        "innovation_gate": 2.5,
+                        "max_measurement_scale": 50.0,
                     },
                 ],
             ),

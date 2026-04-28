@@ -133,6 +133,24 @@ def available_filters() -> dict[str, FilterInfo]:
                 "sample_rate_hz": 80.0,
             },
         ),
+        "adaptive_kalman_z": FilterInfo(
+            name="adaptive_kalman_z",
+            description=(
+                "Causal Z-only adaptive scalar Kalman filtering with robust innovation "
+                "gating and optional motion-aware process-noise scaling."
+            ),
+            defaults={
+                "process_noise": 1e-12,
+                "measurement_noise": 1e-5,
+                "initial_covariance": 1.0,
+                "motion_process_gain": 0.0,
+                "velocity_deadband": 1.0,
+                "innovation_scale": 20.0,
+                "innovation_gate": 2.5,
+                "max_measurement_scale": 100.0,
+                "sample_rate_hz": 80.0,
+            },
+        ),
     }
     filters.update(
         {
@@ -165,6 +183,7 @@ def run_filter(
         "ukf": ukf_filter,
         "ukf_cv": ukf_filter,
         "one_euro_z": one_euro_z_filter,
+        "adaptive_kalman_z": adaptive_kalman_z_filter,
     }
     if normalized not in registry:
         known = ", ".join(sorted(available_filters()))
@@ -190,6 +209,7 @@ def run_filter_timed(
         "ukf": _run_ukf_timed,
         "ukf_cv": _run_ukf_timed,
         "one_euro_z": _run_one_euro_z_timed,
+        "adaptive_kalman_z": _run_adaptive_kalman_z_timed,
     }
     if normalized not in registry:
         known = ", ".join(sorted(available_filters()))
@@ -996,6 +1016,148 @@ def _one_euro_z_filter_impl(
     return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
+def adaptive_kalman_z_filter(
+    traj: Trajectory,
+    process_noise: float = 1e-12,
+    measurement_noise: float = 1e-5,
+    initial_covariance: float = 1.0,
+    motion_process_gain: float = 0.0,
+    velocity_deadband: float = 1.0,
+    innovation_scale: float = 20.0,
+    innovation_gate: float = 2.5,
+    max_measurement_scale: float = 100.0,
+    sample_rate_hz: float = 80.0,
+) -> Trajectory:
+    result, _, _ = _adaptive_kalman_z_filter_impl(
+        traj,
+        process_noise=process_noise,
+        measurement_noise=measurement_noise,
+        initial_covariance=initial_covariance,
+        motion_process_gain=motion_process_gain,
+        velocity_deadband=velocity_deadband,
+        innovation_scale=innovation_scale,
+        innovation_gate=innovation_gate,
+        max_measurement_scale=max_measurement_scale,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=False,
+    )
+    return result
+
+
+def _run_adaptive_kalman_z_timed(
+    traj: Trajectory,
+    process_noise: float = 1e-12,
+    measurement_noise: float = 1e-5,
+    initial_covariance: float = 1.0,
+    motion_process_gain: float = 0.0,
+    velocity_deadband: float = 1.0,
+    innovation_scale: float = 20.0,
+    innovation_gate: float = 2.5,
+    max_measurement_scale: float = 100.0,
+    sample_rate_hz: float = 80.0,
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _adaptive_kalman_z_filter_impl(
+        traj,
+        process_noise=process_noise,
+        measurement_noise=measurement_noise,
+        initial_covariance=initial_covariance,
+        motion_process_gain=motion_process_gain,
+        velocity_deadband=velocity_deadband,
+        innovation_scale=innovation_scale,
+        innovation_gate=innovation_gate,
+        max_measurement_scale=max_measurement_scale,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _adaptive_kalman_z_filter_impl(
+    traj: Trajectory,
+    *,
+    process_noise: float = 1e-12,
+    measurement_noise: float = 1e-5,
+    initial_covariance: float = 1.0,
+    motion_process_gain: float = 0.0,
+    velocity_deadband: float = 1.0,
+    innovation_scale: float = 20.0,
+    innovation_gate: float = 2.5,
+    max_measurement_scale: float = 100.0,
+    sample_rate_hz: float = 80.0,
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
+    """Causal adaptive scalar Kalman filter for the Z translation channel only.
+
+    The filter keeps X/Y translation and orientation untouched, and focuses on
+    making Z more robust in the presence of slow drift, outliers, and strongly
+    anisotropic depth noise. The current default is tuned for static scenes and
+    behaves like a robust random-walk Kalman smoother on Z.
+    """
+
+    if (
+        process_noise <= 0.0
+        or measurement_noise <= 0.0
+        or initial_covariance <= 0.0
+        or motion_process_gain < 0.0
+        or velocity_deadband < 0.0
+        or innovation_scale < 0.0
+        or innovation_gate <= 0.0
+        or max_measurement_scale < 1.0
+        or sample_rate_hz <= 0.0
+    ):
+        raise ValueError(
+            "process_noise, measurement_noise, initial_covariance, innovation_gate, "
+            "max_measurement_scale, and sample_rate_hz must be positive; "
+            "motion_process_gain, velocity_deadband, and innovation_scale must be >= 0"
+        )
+
+    total_start_ns = perf_counter_ns() if collect_timing else 0
+    positions = traj.positions.copy()
+    z_result = _adaptive_kalman_filter_1d(
+        positions[:, 2],
+        timestamps=traj.timestamps,
+        process_noise=process_noise,
+        measurement_noise=measurement_noise,
+        initial_covariance=initial_covariance,
+        motion_process_gain=motion_process_gain,
+        velocity_deadband=velocity_deadband,
+        innovation_scale=innovation_scale,
+        innovation_gate=innovation_gate,
+        max_measurement_scale=max_measurement_scale,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=collect_timing,
+    )
+    if collect_timing:
+        filtered_z, per_pose_time_ns, _ = z_result
+    else:
+        filtered_z = z_result
+    positions[:, 2] = filtered_z
+    result = traj.copy_with(
+        poses=make_poses(positions, traj.rotations),
+        name=f"{traj.name}__adaptive_kalman_z",
+        metadata={
+            "filter": "adaptive_kalman_z",
+            "params": {
+                "process_noise": process_noise,
+                "measurement_noise": measurement_noise,
+                "initial_covariance": initial_covariance,
+                "motion_process_gain": motion_process_gain,
+                "velocity_deadband": velocity_deadband,
+                "innovation_scale": innovation_scale,
+                "innovation_gate": innovation_gate,
+                "max_measurement_scale": max_measurement_scale,
+                "sample_rate_hz": sample_rate_hz,
+            },
+        },
+    )
+    if not collect_timing:
+        return result, None, 0
+    assert per_pose_time_ns is not None
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
+
+
 def _moving_average(values: ArrayLike, window: int) -> ArrayF:
     arr = np.asarray(values, dtype=float)
     if window <= 1:
@@ -1072,6 +1234,74 @@ def _one_euro_filter_1d(
             per_pose_time_ns[idx] += perf_counter_ns() - step_start_ns
     if per_pose_time_ns is None:
         return result
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
+
+
+def _adaptive_kalman_filter_1d(
+    values: ArrayLike,
+    *,
+    timestamps: ArrayLike | None,
+    process_noise: float,
+    measurement_noise: float,
+    initial_covariance: float,
+    motion_process_gain: float,
+    velocity_deadband: float,
+    innovation_scale: float,
+    innovation_gate: float,
+    max_measurement_scale: float,
+    sample_rate_hz: float,
+    collect_timing: bool = False,
+) -> ArrayF | tuple[ArrayF, ArrayI, int]:
+    total_start_ns = perf_counter_ns() if collect_timing else 0
+    measurements = np.asarray(values, dtype=float)
+    if measurements.ndim != 1:
+        raise ValueError("adaptive Kalman filter values must be one-dimensional")
+    count = measurements.shape[0]
+    if count <= 1:
+        result = measurements.copy()
+        if not collect_timing:
+            return result
+        total_time_ns = perf_counter_ns() - total_start_ns
+        return result, _uniform_time_series(count, total_time_ns), total_time_ns
+
+    dt_values = _dt_values(timestamps, count, sample_rate_hz)
+    result = np.empty_like(measurements)
+    per_pose_time_ns = np.zeros(count, dtype=np.int64) if collect_timing else None
+    init_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
+    result[0] = measurements[0]
+    state = float(measurements[0])
+    covariance = float(initial_covariance)
+    if per_pose_time_ns is not None:
+        per_pose_time_ns[0] += perf_counter_ns() - init_start_ns
+
+    for idx, dt in enumerate(dt_values, start=1):
+        step_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
+        measurement_speed = abs(measurements[idx] - measurements[idx - 1]) / dt
+        motion_scale = 1.0 + motion_process_gain * max(measurement_speed - velocity_deadband, 0.0)
+
+        covariance = covariance + process_noise * motion_scale
+
+        innovation = float(measurements[idx] - state)
+        base_variance = covariance + measurement_noise
+        sigma = float(np.sqrt(max(base_variance, 1e-12)))
+        normalized_innovation = abs(innovation) / sigma
+        measurement_scale = 1.0 + innovation_scale * max(normalized_innovation - innovation_gate, 0.0) ** 2
+        measurement_scale = min(measurement_scale, max_measurement_scale)
+        r = measurement_noise * measurement_scale
+        s = covariance + r
+
+        innovation_limit = innovation_gate * np.sqrt(max(s, 1e-12))
+        clipped_innovation = float(np.clip(innovation, -innovation_limit, innovation_limit))
+        gain = covariance / s
+        state = state + gain * clipped_innovation
+        covariance = (1.0 - gain) * covariance
+        result[idx] = state
+        if per_pose_time_ns is not None:
+            per_pose_time_ns[idx] += perf_counter_ns() - step_start_ns
+    if not collect_timing:
+        return result
+    assert per_pose_time_ns is not None
     total_time_ns = perf_counter_ns() - total_start_ns
     return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 

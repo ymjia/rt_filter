@@ -58,6 +58,7 @@ rt-filter catalog
 | `kalman_cv` | `process_noise`, `measurement_noise`, `initial_covariance` | 常速度模型 Kalman 滤波；同时估计位置/旋转向量及其速度 | 静态或低速数据、近似匀速轨迹、需要较强抖动压制的稳定性测试 | 模型假设不适合剧烈加减速；参数过强会把真实运动当噪声 |
 | `ukf` | `motion_model`, `process_noise`, `measurement_noise`, `initial_covariance`, `initial_velocity`, `initial_linear_velocity`, `initial_angular_velocity`, `alpha`, `beta`, `kappa` | 无迹 Kalman 滤波；对平移和相对旋转向量使用匀速或匀加速状态预测 | 位姿变化连续、测量噪声较大、希望显式引入运动连续性约束的轨迹 | 当前仅使用位姿测量；若无关节/控制量，复杂机械臂运动学模型无法真正发挥 |
 | `one_euro_z` | `min_cutoff`, `beta`, `d_cutoff`, `derivative_deadband`, `sample_rate_hz` | Z 方向 One Euro 自适应低通；只改 Z，保留 X/Y 和姿态 | Z 噪声明显大于 X/Y、需要在线实时且减少拖影的静止或慢速转向场景 | 只处理 Z 随机噪声；`min_cutoff` 太低或 `derivative_deadband` 太大仍会产生滞后 |
+| `adaptive_kalman_z` | `process_noise`, `measurement_noise`, `initial_covariance`, `motion_process_gain`, `velocity_deadband`, `innovation_scale`, `innovation_gate`, `max_measurement_scale`, `sample_rate_hz` | Z 方向自适应标量 Kalman；只改 Z，带创新门控与可选速度自适应 | 当前默认更偏静态场景；适合 Z 噪声明显更大、且希望比 One Euro 更强抑制慢漂和偶发尖峰的场景 | 静态默认参数在真实动态轨迹上可能过强；拿到真实动态数据后需要重新整定 |
 
 如果已经通过 `python3 scripts/build_cpp_demo.py` 构建了独立 C++ demo，GUI 和分析链路里还会出现 `ukf-cpp` 与 `one_euro_z-cpp`。这两个条目会由 Python 调用 `rt_filter_cpp_demo` 可执行程序，并直接导入该程序写出的轨迹结果与每帧耗时数据。
 
@@ -220,11 +221,44 @@ params:
 
 工程判断：如果主要问题是 SN 固定位置数据里 Z 抖动比 X/Y 大得多，可以优先看 `z_jerk_rms_ratio`、`to_raw_z_rmse` 和 GUI 中的 `XYZ Neighbor Mean Deviation`。默认增强参数更偏向静止降噪；如果观察到慢速 Z 向运动拖影，优先降低 `derivative_deadband` 或提高 `min_cutoff`。
 
+### `adaptive_kalman_z`
+
+`adaptive_kalman_z` 是一个只处理 Z 的标量 Kalman 滤波器。当前默认实现更偏静态数据：状态模型按随机游走处理 Z，利用创新门控和自适应测量噪声压制慢漂与偶发尖峰。X/Y 和旋转保持原样，不会把原本更干净的通道一起抹平。
+
+参数含义：
+
+- `process_noise`：Z 状态过程噪声。越小越稳，越适合静态；越大越跟手。
+- `measurement_noise`：Z 测量噪声方差。越大表示越不相信原始 Z 观测，平滑更强。
+- `initial_covariance`：初始协方差，默认 `1.0`。
+- `motion_process_gain`：根据测得的 Z 速度放大过程噪声的强度。当前静态默认是 `0.0`。
+- `velocity_deadband`：速度死区，单位约为 mm/s。
+- `innovation_scale`：当创新超过门限后，测量噪声增大的强度。
+- `innovation_gate`：创新门控阈值，单位是 sigma。
+- `max_measurement_scale`：测量噪声放大的上限。
+- `sample_rate_hz`：无时间戳输入时使用的采样率。
+
+当前静态推荐先试：
+
+```yaml
+name: adaptive_kalman_z
+params:
+  process_noise: 1.0e-12
+  measurement_noise: 1.0e-5
+  initial_covariance: 1.0
+  motion_process_gain: 0.0
+  velocity_deadband: 1.0
+  innovation_scale: 20.0
+  innovation_gate: 2.5
+  max_measurement_scale: 100.0
+```
+
+工程判断：如果你的当前目标是“先把静态 Z 微小噪声压到很低”，这个滤波器通常会比 `one_euro_z` 更激进；但默认参数是按静态数据整定的，等拿到真实动态轨迹后，优先重新调 `process_noise`、`motion_process_gain` 和 `measurement_noise`。
+
 ### 选择建议
 
 | 目标 | 优先尝试 | 观察指标 |
 | --- | --- | --- |
-| 静止点云稳定性、极差/标准差压制 | `one_euro_z`, `kalman_cv`, `ukf`, `moving_average` | `filtered_range_z`, `std_norm_ratio`, `z_std_ratio`, `to_raw_translation_rmse` |
+| 静止点云稳定性、极差/标准差压制 | `adaptive_kalman_z`, `one_euro_z`, `kalman_cv`, `ukf`, `moving_average` | `filtered_range_z`, `std_norm_ratio`, `z_std_ratio`, `to_raw_translation_rmse` |
 | 离线运动轨迹降噪且保留形状 | `savgol` | `to_reference_translation_rmse`, `to_raw_translation_rmse`, `jerk_rms_ratio` |
 | 在线实时轻量滤波 | `one_euro_z`, `exponential` | `to_raw_translation_rmse`, `to_reference_translation_rmse`, 延迟表现 |
 | 快速建立基线 | `moving_average` | `acceleration_rms_ratio`, `jerk_rms_ratio`, `to_raw_translation_max` |

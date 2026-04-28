@@ -47,6 +47,18 @@ def test_all_filters_keep_shape():
             },
         ),
         ("one_euro_z", {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0}),
+        (
+            "adaptive_kalman_z",
+            {
+                "process_noise": 1e-12,
+                "measurement_noise": 1e-5,
+                "motion_process_gain": 0.0,
+                "velocity_deadband": 1.0,
+                "innovation_scale": 20.0,
+                "innovation_gate": 2.5,
+                "max_measurement_scale": 100.0,
+            },
+        ),
     ]
     for name, params in specs:
         filtered = run_filter(name, traj, params)
@@ -84,6 +96,51 @@ def test_one_euro_z_derivative_deadband_improves_static_denoising():
     )
 
     assert with_deadband.positions[:, 2].std() < without_deadband.positions[:, 2].std()
+
+
+def test_adaptive_kalman_z_reduces_z_noise_without_changing_xy_or_rotation():
+    traj = _noisy_static()
+    filtered = run_filter(
+        "adaptive_kalman_z",
+        traj,
+        {
+            "process_noise": 1e-12,
+            "measurement_noise": 1e-5,
+            "motion_process_gain": 0.0,
+            "velocity_deadband": 1.0,
+            "innovation_scale": 20.0,
+            "innovation_gate": 2.5,
+            "max_measurement_scale": 100.0,
+        },
+    )
+
+    np.testing.assert_allclose(filtered.positions[:, :2], traj.positions[:, :2])
+    np.testing.assert_allclose(filtered.rotations.as_matrix(), traj.rotations.as_matrix())
+    assert filtered.positions[:, 2].std() < traj.positions[:, 2].std()
+
+
+def test_adaptive_kalman_z_is_robust_to_single_z_spike():
+    traj = _noisy_static()
+    spiked = traj.copy_with(poses=traj.poses.copy())
+    spiked.poses[60, 2, 3] += 2.0
+
+    filtered = run_filter(
+        "adaptive_kalman_z",
+        spiked,
+        {
+            "process_noise": 1e-12,
+            "measurement_noise": 1e-5,
+            "motion_process_gain": 0.0,
+            "velocity_deadband": 1.0,
+            "innovation_scale": 20.0,
+            "innovation_gate": 2.5,
+            "max_measurement_scale": 100.0,
+        },
+    )
+
+    spike_raw = abs(spiked.positions[60, 2] - np.median(spiked.positions[:, 2]))
+    spike_filtered = abs(filtered.positions[60, 2] - np.median(filtered.positions[:, 2]))
+    assert spike_filtered < spike_raw * 0.2
 
 
 def test_ukf_reduces_static_acceleration():
