@@ -268,10 +268,12 @@ outputs/run_YYYYMMDD_HHMMSS/
       trajectory.csv
       trajectory.vtu
       metrics.json
+      timing.csv
     savgol/window-11_polyorder-2/
       trajectory.csv
       trajectory.vtu
       metrics.json
+      timing.csv
 ```
 
 ## 评估与统计
@@ -303,6 +305,7 @@ rt-filter report outputs/run_YYYYMMDD_HHMMSS/summary.csv --metric to_reference_t
 | `manifest.json` | 批处理配置、输入、输出路径、可视化配置 | 复现实验和定位文件 |
 | `trajectory.csv` | 滤波后的轨迹 | 后续算法或人工检查 |
 | `trajectory.vtu` | 带法向点云 | ParaView 三维对比 |
+| `timing.csv` | 每一帧/位姿的滤波耗时（ns/us/ms） | 对比实时性和抖动峰值 |
 | `report/ranked_results.csv` | 按指定 metric 排序后的总表 | 找最优参数 |
 | `report/*.png` | 算法箱线图、参数趋势图 | 看参数变化趋势 |
 | `sn_filter_stability.csv` | SN 静态数据专用稳定性指标 | 比较静态抖动压制效果 |
@@ -509,8 +512,9 @@ python scripts/build_gui.py
 - `Add Dir` 会递归扫描所选目录及其子目录中的 `.csv/.json/.npy/.npz` 轨迹文件
 - GUI 会把上一次已添加且仍存在的输入文件写回 `rt_filter_gui.json`，下次启动时优先恢复这些 case
 - 在滤波表中勾选算法，参数用 JSON 写法，列表值会展开成参数网格
-- 运行后查看指标表、维度结论和曲线图
+- 运行后查看指标表、维度结论和曲线图；右下角新增 `Per-frame Compute Time` 图，可直接比较不同滤波方法的逐帧耗时
 - 结果会写入 `outputs/gui/run_YYYYMMDD_HHMMSS`
+- 每个滤波结果目录会额外写出 `timing.csv`，并在 `summary.csv/metrics.json` 中记录总耗时、单帧均值、P95、最大值
 - `Generate ParaView Script` 会写出 `paraview_compare.py`，同时引用原始和各滤波结果 `.vtu`
 
 ParaView 对比脚本运行方式：
@@ -524,11 +528,14 @@ pvpython outputs\gui\run_YYYYMMDD_HHMMSS\paraview_compare.py
 ## Python API
 
 ```python
-from rt_filter import read_trajectory, write_trajectory, run_filter
+from rt_filter import read_trajectory, write_trajectory, run_filter, run_filter_timed
 from rt_filter.vtk_export import write_vtk_unstructured_grid
 
 traj = read_trajectory("input.csv")
 filtered = run_filter("moving_average", traj, {"window": 9})
 write_trajectory(filtered, "outputs/filtered.csv")
 write_vtk_unstructured_grid(filtered, "outputs/filtered.vtu")
+
+timed = run_filter_timed("moving_average", traj, {"window": 9})
+print(timed.total_time_ns, timed.per_pose_time_ns[:5])
 ```

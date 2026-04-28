@@ -67,6 +67,10 @@ METRIC_COLUMNS = [
     "to_raw_translation_max",
     "acceleration_rms_ratio",
     "jerk_rms_ratio",
+    "compute_total_ms",
+    "compute_mean_us",
+    "compute_p95_us",
+    "compute_max_us",
     "to_raw_x_rmse",
     "to_raw_y_rmse",
     "to_raw_z_rmse",
@@ -132,6 +136,14 @@ class PlotCanvas(FigureCanvas):
             top=0.92,
             bottom=0.28,
             wspace=0.28,
+        )
+
+    def _apply_single_axis_layout(self) -> None:
+        self.figure.subplots_adjust(
+            left=0.085,
+            right=0.985,
+            top=0.95,
+            bottom=0.1,
         )
 
     def plot_empty(self, message: str) -> None:
@@ -336,6 +348,42 @@ class PlotCanvas(FigureCanvas):
         self._apply_bar_layout()
         self.draw()
 
+    def plot_compute_times(
+        self,
+        results: list[FilterAnalysisResult],
+        visible_labels: set[str] | None = None,
+    ) -> None:
+        self.figure.clear()
+        visible_results = [result for result in results if _is_visible(result.label, visible_labels)]
+        if not visible_results:
+            self.plot_empty("No visible curves")
+            return
+
+        ax = self.figure.add_subplot(111)
+        max_time_ns = max(
+            int(np.max(result.per_pose_time_ns)) if result.per_pose_time_ns.size else 0
+            for result in visible_results
+        )
+        time_scale, time_unit = _time_axis_scale(max_time_ns)
+        x_values: list[np.ndarray] = []
+        y_values: list[np.ndarray] = []
+        for result in visible_results:
+            count = min(result.trajectory.count, result.per_pose_time_ns.shape[0])
+            x_axis = _sample_axis(result.trajectory)[:count]
+            y_axis = result.per_pose_time_ns[:count].astype(np.float64) / time_scale
+            ax.plot(x_axis, y_axis, label=result.label, linewidth=1.0, alpha=0.9)
+            x_values.append(x_axis)
+            y_values.append(y_axis)
+        if not _set_data_limits(ax, x_values, y_values):
+            _annotate_no_visible_data(ax)
+        ax.set_title("Per-frame compute time")
+        ax.set_xlabel("timestamp / sample")
+        ax.set_ylabel(f"time ({time_unit})")
+        ax.grid(True, alpha=0.25)
+        _legend_if_needed(ax, fontsize=7, loc="upper right")
+        self._apply_single_axis_layout()
+        self.draw()
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -508,6 +556,7 @@ class MainWindow(QMainWindow):
                 "XYZ Neighbor Mean Deviation",
                 "Metric Bars",
                 "Dimension Jerk Ratios",
+                "Per-frame Compute Time",
             ]
         )
         self.chart_combo.currentIndexChanged.connect(self._on_chart_changed)
@@ -694,6 +743,8 @@ class MainWindow(QMainWindow):
             self.canvas.plot_metric_bars(self.results, visible_labels)
         elif mode == "Dimension Jerk Ratios":
             self.canvas.plot_dimension_ratios(self.results, visible_labels)
+        elif mode == "Per-frame Compute Time":
+            self.canvas.plot_compute_times(self.results, visible_labels)
         else:
             self.canvas.plot_empty("Unknown chart")
 
@@ -718,6 +769,8 @@ class MainWindow(QMainWindow):
             return [result.label for result in self.results]
         if mode == "Dimension Jerk Ratios":
             return ["X jerk ratio", "Y jerk ratio", "Z jerk ratio"]
+        if mode == "Per-frame Compute Time":
+            return [result.label for result in self.results]
         return []
 
     def _visible_curve_labels(self) -> set[str]:
@@ -949,6 +1002,8 @@ class MainWindow(QMainWindow):
                 lines.append(f"  CSV: {result.trajectory_path}")
             if result.vtk_path:
                 lines.append(f"  VTK: {result.vtk_path}")
+            if result.timing_path:
+                lines.append(f"  Timing: {result.timing_path}")
         if lines:
             self.detail_text.setPlainText("\n".join(lines))
 
@@ -1008,6 +1063,14 @@ def _legend_if_needed(ax: Any, **kwargs: Any) -> None:
     handles, labels = ax.get_legend_handles_labels()
     if handles and labels:
         ax.legend(**kwargs)
+
+
+def _time_axis_scale(max_time_ns: int) -> tuple[float, str]:
+    if max_time_ns >= 1_000_000:
+        return 1_000_000.0, "ms"
+    if max_time_ns >= 1_000:
+        return 1_000.0, "us"
+    return 1.0, "ns"
 
 
 def _format_cell(value: Any) -> str:

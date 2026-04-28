@@ -11,7 +11,7 @@ import numpy as np
 
 from rt_filter.batch import expand_parameter_grid, parameter_slug
 from rt_filter.evaluation import compare_filter_result, trajectory_metrics
-from rt_filter.filters import run_filter
+from rt_filter.filters import run_filter_timed
 from rt_filter.io import write_trajectory
 from rt_filter.se3 import rotation_angle
 from rt_filter.trajectory import Trajectory
@@ -28,11 +28,13 @@ class FilterSpec:
 class FilterAnalysisResult:
     spec: FilterSpec
     trajectory: Trajectory
+    per_pose_time_ns: np.ndarray
     metrics: dict[str, float | int]
     dimension_metrics: dict[str, float | int]
     output_dir: Path | None = None
     trajectory_path: Path | None = None
     vtk_path: Path | None = None
+    timing_path: Path | None = None
 
     @property
     def label(self) -> str:
@@ -48,6 +50,7 @@ class FilterAnalysisResult:
             **self.dimension_metrics,
             "trajectory_path": "" if self.trajectory_path is None else str(self.trajectory_path),
             "vtk_path": "" if self.vtk_path is None else str(self.vtk_path),
+            "timing_path": "" if self.timing_path is None else str(self.timing_path),
         }
 
 
@@ -91,15 +94,17 @@ def analyze_filters(
     results: list[FilterAnalysisResult] = []
     for spec in specs:
         try:
-            filtered = run_filter(spec.algorithm, raw, spec.params)
+            timed_run = run_filter_timed(spec.algorithm, raw, spec.params)
         except Exception as exc:
             params_text = json.dumps(spec.params, ensure_ascii=False, sort_keys=True)
             raise RuntimeError(
                 f"filter failed: {spec.algorithm} params={params_text}: {exc}"
             ) from exc
+        filtered = timed_run.trajectory
         metrics = compare_filter_result(raw, filtered, reference=reference)
+        metrics.update(_timing_metrics(timed_run.per_pose_time_ns, timed_run.total_time_ns))
         dimension_metrics = compare_dimensions(raw, filtered, reference=reference)
-        result = FilterAnalysisResult(spec, filtered, metrics, dimension_metrics)
+        result = FilterAnalysisResult(spec, filtered, timed_run.per_pose_time_ns, metrics, dimension_metrics)
         if run_dir is not None:
             result_dir = run_dir / spec.algorithm / parameter_slug(spec.params)
             result_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +114,8 @@ def analyze_filters(
             if write_vtk:
                 result.vtk_path = result_dir / "trajectory.vtu"
                 write_vtk_unstructured_grid(filtered, result.vtk_path)
+            result.timing_path = result_dir / "timing.csv"
+            _write_timing_series(result.timing_path, filtered, timed_run.per_pose_time_ns)
             (result_dir / "metrics.json").write_text(
                 json.dumps(result.table_row(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -190,6 +197,14 @@ def analysis_conclusions(results: list[FilterAnalysisResult]) -> list[str]:
         f"{least_offset.label}，to_raw translation RMSE={least_offset.metrics['to_raw_translation_rmse']:.6g}。"
     )
 
+    fastest = min(results, key=lambda item: float(item.metrics.get("compute_mean_us", float("inf"))))
+    if "compute_mean_us" in fastest.metrics:
+        lines.append(
+            "单帧平均耗时最低："
+            f"{fastest.label}，mean={fastest.metrics['compute_mean_us']:.6g} us，"
+            f"P95={fastest.metrics.get('compute_p95_us', 0.0):.6g} us。"
+        )
+
     for axis in "xyz":
         best_axis = min(results, key=lambda item: float(item.dimension_metrics[f"{axis}_jerk_rms_ratio"]))
         worst_offset = max(results, key=lambda item: float(item.dimension_metrics[f"to_raw_{axis}_rmse"]))
@@ -243,6 +258,53 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     if denominator == 0.0:
         return 0.0 if numerator == 0.0 else float("inf")
     return float(numerator / denominator)
+
+
+def _timing_metrics(per_pose_time_ns: np.ndarray, total_time_ns: int) -> dict[str, float | int]:
+    values = np.asarray(per_pose_time_ns, dtype=np.int64)
+    if values.size == 0:
+        return {
+            "compute_total_ns": int(total_time_ns),
+            "compute_total_ms": float(total_time_ns) / 1_000_000.0,
+            "compute_mean_us": 0.0,
+            "compute_p95_us": 0.0,
+            "compute_max_us": 0.0,
+        }
+    values_us = values.astype(np.float64) / 1_000.0
+    return {
+        "compute_total_ns": int(total_time_ns),
+        "compute_total_ms": float(total_time_ns) / 1_000_000.0,
+        "compute_mean_us": float(np.mean(values_us)),
+        "compute_p95_us": float(np.percentile(values_us, 95)),
+        "compute_max_us": float(np.max(values_us)),
+    }
+
+
+def _write_timing_series(path: Path, traj: Trajectory, per_pose_time_ns: np.ndarray) -> None:
+    timestamps = None if traj.timestamps is None else np.asarray(traj.timestamps, dtype=float)
+    values = np.asarray(per_pose_time_ns, dtype=np.int64)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "frame_index",
+                "timestamp",
+                "compute_time_ns",
+                "compute_time_us",
+                "compute_time_ms",
+            ],
+        )
+        writer.writeheader()
+        for index, elapsed_ns in enumerate(values.tolist()):
+            writer.writerow(
+                {
+                    "frame_index": index,
+                    "timestamp": "" if timestamps is None else float(timestamps[index]),
+                    "compute_time_ns": int(elapsed_ns),
+                    "compute_time_us": float(elapsed_ns) / 1_000.0,
+                    "compute_time_ms": float(elapsed_ns) / 1_000_000.0,
+                }
+            )
 
 
 def _write_summary(path: Path, rows: list[dict[str, Any]]) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import perf_counter_ns
 from typing import Any
 
 import numpy as np
@@ -18,6 +19,7 @@ from rt_filter.trajectory import Trajectory
 
 
 ArrayF = NDArray[np.float64]
+ArrayI = NDArray[np.int64]
 FilterFunc = Callable[..., Trajectory]
 
 
@@ -26,6 +28,13 @@ class FilterInfo:
     name: str
     description: str
     defaults: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class TimedFilterRun:
+    trajectory: Trajectory
+    per_pose_time_ns: ArrayI
+    total_time_ns: int
 
 
 def available_filters() -> dict[str, FilterInfo]:
@@ -102,22 +111,73 @@ def run_filter(
     return registry[normalized](trajectory, **params)
 
 
+def run_filter_timed(
+    name: str,
+    trajectory: Trajectory,
+    params: dict[str, Any] | None = None,
+) -> TimedFilterRun:
+    normalized = name.lower().replace("-", "_")
+    params = {} if params is None else dict(params)
+    registry: dict[str, Callable[..., TimedFilterRun]] = {
+        "moving_average": _run_moving_average_timed,
+        "savgol": _run_savgol_timed,
+        "savitzky_golay": _run_savgol_timed,
+        "exponential": _run_exponential_timed,
+        "kalman_cv": _run_kalman_cv_timed,
+        "ukf": _run_ukf_timed,
+        "ukf_cv": _run_ukf_timed,
+        "one_euro_z": _run_one_euro_z_timed,
+    }
+    if normalized not in registry:
+        known = ", ".join(sorted(available_filters()))
+        raise ValueError(f"unknown filter '{name}', available filters: {known}")
+    return registry[normalized](trajectory, **params)
+
+
 def moving_average_filter(traj: Trajectory, window: int = 5) -> Trajectory:
+    result, _, _ = _moving_average_filter_impl(traj, window=window, collect_timing=False)
+    return result
+
+
+def _run_moving_average_timed(traj: Trajectory, window: int = 5) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _moving_average_filter_impl(
+        traj,
+        window=window,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _moving_average_filter_impl(
+    traj: Trajectory,
+    *,
+    window: int = 5,
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
     window = _validate_window(window, traj.count, odd=False)
+    total_start_ns = perf_counter_ns() if collect_timing else 0
+    per_pose_time_ns = np.zeros(traj.count, dtype=np.int64) if collect_timing else None
     positions = _moving_average(traj.positions, window)
     rotations = traj.rotations
     smoothed_rotations = []
     half = window // 2
     for idx in range(traj.count):
+        step_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
         start = max(0, idx - half)
         stop = min(traj.count, idx + half + 1)
         smoothed_rotations.append(rotations[start:stop].mean())
+        if per_pose_time_ns is not None:
+            per_pose_time_ns[idx] += perf_counter_ns() - step_start_ns
     result = traj.copy_with(
         poses=make_poses(positions, Rotation.concatenate(smoothed_rotations)),
         name=f"{traj.name}__moving_average",
         metadata={"filter": "moving_average", "params": {"window": window}},
     )
-    return result
+    if per_pose_time_ns is None:
+        return result, None, 0
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
 def savgol_filter_trajectory(
@@ -126,8 +186,44 @@ def savgol_filter_trajectory(
     polyorder: int = 2,
     mode: str = "interp",
 ) -> Trajectory:
+    result, _, _ = _savgol_filter_trajectory_impl(
+        traj,
+        window=window,
+        polyorder=polyorder,
+        mode=mode,
+        collect_timing=False,
+    )
+    return result
+
+
+def _run_savgol_timed(
+    traj: Trajectory,
+    window: int = 9,
+    polyorder: int = 2,
+    mode: str = "interp",
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _savgol_filter_trajectory_impl(
+        traj,
+        window=window,
+        polyorder=polyorder,
+        mode=mode,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _savgol_filter_trajectory_impl(
+    traj: Trajectory,
+    *,
+    window: int = 9,
+    polyorder: int = 2,
+    mode: str = "interp",
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
+    total_start_ns = perf_counter_ns() if collect_timing else 0
     if traj.count <= polyorder + 1:
-        return traj.copy_with(
+        result = traj.copy_with(
             name=f"{traj.name}__savgol",
             metadata={
                 "filter": "savgol",
@@ -135,6 +231,10 @@ def savgol_filter_trajectory(
                 "warning": "trajectory too short; returned unchanged",
             },
         )
+        if not collect_timing:
+            return result, None, 0
+        total_time_ns = perf_counter_ns() - total_start_ns
+        return result, _uniform_time_series(traj.count, total_time_ns), total_time_ns
     window = _validate_window(window, traj.count, odd=True)
     if polyorder >= window:
         raise ValueError("polyorder must be smaller than window")
@@ -144,7 +244,7 @@ def savgol_filter_trajectory(
     rotvecs = relative_rotvecs(traj.rotations, reference=reference)
     smoothed_rotvecs = savgol_filter(rotvecs, window, polyorder, axis=0, mode=mode)
     rotations = rotations_from_relative_rotvecs(smoothed_rotvecs, reference)
-    return traj.copy_with(
+    result = traj.copy_with(
         poses=make_poses(positions, rotations),
         name=f"{traj.name}__savgol",
         metadata={
@@ -152,24 +252,60 @@ def savgol_filter_trajectory(
             "params": {"window": window, "polyorder": polyorder, "mode": mode},
         },
     )
+    if not collect_timing:
+        return result, None, 0
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _uniform_time_series(traj.count, total_time_ns), total_time_ns
 
 
 def exponential_filter(traj: Trajectory, alpha: float = 0.25) -> Trajectory:
+    result, _, _ = _exponential_filter_impl(traj, alpha=alpha, collect_timing=False)
+    return result
+
+
+def _run_exponential_timed(traj: Trajectory, alpha: float = 0.25) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _exponential_filter_impl(
+        traj,
+        alpha=alpha,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _exponential_filter_impl(
+    traj: Trajectory,
+    *,
+    alpha: float = 0.25,
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
     if not 0.0 < alpha <= 1.0:
         raise ValueError("alpha must be in (0, 1]")
+    total_start_ns = perf_counter_ns() if collect_timing else 0
+    per_pose_time_ns = np.zeros(traj.count, dtype=np.int64) if collect_timing else None
+    init_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
     positions = np.empty_like(traj.positions)
     positions[0] = traj.positions[0]
     input_rotations = traj.rotations
     output_rotations = [input_rotations[0]]
+    if per_pose_time_ns is not None:
+        per_pose_time_ns[0] += perf_counter_ns() - init_start_ns
     for idx in range(1, traj.count):
+        step_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
         positions[idx] = (1.0 - alpha) * positions[idx - 1] + alpha * traj.positions[idx]
         delta = output_rotations[-1].inv() * input_rotations[idx]
         output_rotations.append(output_rotations[-1] * Rotation.from_rotvec(alpha * delta.as_rotvec()))
-    return traj.copy_with(
+        if per_pose_time_ns is not None:
+            per_pose_time_ns[idx] += perf_counter_ns() - step_start_ns
+    result = traj.copy_with(
         poses=make_poses(positions, Rotation.concatenate(output_rotations)),
         name=f"{traj.name}__exponential",
         metadata={"filter": "exponential", "params": {"alpha": alpha}},
     )
+    if per_pose_time_ns is None:
+        return result, None, 0
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
 def kalman_cv_filter(
@@ -178,26 +314,72 @@ def kalman_cv_filter(
     measurement_noise: float = 1e-2,
     initial_covariance: float = 1.0,
 ) -> Trajectory:
+    result, _, _ = _kalman_cv_filter_impl(
+        traj,
+        process_noise=process_noise,
+        measurement_noise=measurement_noise,
+        initial_covariance=initial_covariance,
+        collect_timing=False,
+    )
+    return result
+
+
+def _run_kalman_cv_timed(
+    traj: Trajectory,
+    process_noise: float = 1e-4,
+    measurement_noise: float = 1e-2,
+    initial_covariance: float = 1.0,
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _kalman_cv_filter_impl(
+        traj,
+        process_noise=process_noise,
+        measurement_noise=measurement_noise,
+        initial_covariance=initial_covariance,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _kalman_cv_filter_impl(
+    traj: Trajectory,
+    *,
+    process_noise: float = 1e-4,
+    measurement_noise: float = 1e-2,
+    initial_covariance: float = 1.0,
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
     if process_noise <= 0 or measurement_noise <= 0 or initial_covariance <= 0:
         raise ValueError("noise and covariance parameters must be positive")
-    positions = _kalman_constant_velocity(
+    total_start_ns = perf_counter_ns() if collect_timing else 0
+    position_result = _kalman_constant_velocity_impl(
         traj.positions,
         timestamps=traj.timestamps,
         process_noise=process_noise,
         measurement_noise=measurement_noise,
         initial_covariance=initial_covariance,
+        collect_timing=collect_timing,
     )
+    if collect_timing:
+        positions, position_time_ns, _ = position_result
+    else:
+        positions = position_result
     reference = traj.rotations[0]
     rotvecs = relative_rotvecs(traj.rotations, reference=reference)
-    smoothed_rotvecs = _kalman_constant_velocity(
+    rotation_result = _kalman_constant_velocity_impl(
         rotvecs,
         timestamps=traj.timestamps,
         process_noise=process_noise,
         measurement_noise=measurement_noise,
         initial_covariance=initial_covariance,
+        collect_timing=collect_timing,
     )
+    if collect_timing:
+        smoothed_rotvecs, rotation_time_ns, _ = rotation_result
+    else:
+        smoothed_rotvecs = rotation_result
     rotations = rotations_from_relative_rotvecs(smoothed_rotvecs, reference)
-    return traj.copy_with(
+    result = traj.copy_with(
         poses=make_poses(positions, rotations),
         name=f"{traj.name}__kalman_cv",
         metadata={
@@ -208,6 +390,16 @@ def kalman_cv_filter(
                 "initial_covariance": initial_covariance,
             },
         },
+    )
+    if not collect_timing:
+        return result, None, 0
+    assert position_time_ns is not None
+    assert rotation_time_ns is not None
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return (
+        result,
+        _finalize_time_series(position_time_ns + rotation_time_ns, total_time_ns),
+        total_time_ns,
     )
 
 
@@ -225,6 +417,73 @@ def ukf_filter(
     kappa: float = 0.0,
     sample_rate_hz: float = 100.0,
 ) -> Trajectory:
+    result, _, _ = _ukf_filter_impl(
+        traj,
+        motion_model=motion_model,
+        process_noise=process_noise,
+        measurement_noise=measurement_noise,
+        initial_covariance=initial_covariance,
+        initial_velocity=initial_velocity,
+        initial_linear_velocity=initial_linear_velocity,
+        initial_angular_velocity=initial_angular_velocity,
+        alpha=alpha,
+        beta=beta,
+        kappa=kappa,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=False,
+    )
+    return result
+
+
+def _run_ukf_timed(
+    traj: Trajectory,
+    motion_model: str = "constant_velocity",
+    process_noise: float = 1000.0,
+    measurement_noise: float = 0.001,
+    initial_covariance: float = 1.0,
+    initial_velocity: ArrayLike | None = None,
+    initial_linear_velocity: ArrayLike | None = None,
+    initial_angular_velocity: ArrayLike | None = None,
+    alpha: float = 1e-3,
+    beta: float = 2.0,
+    kappa: float = 0.0,
+    sample_rate_hz: float = 100.0,
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _ukf_filter_impl(
+        traj,
+        motion_model=motion_model,
+        process_noise=process_noise,
+        measurement_noise=measurement_noise,
+        initial_covariance=initial_covariance,
+        initial_velocity=initial_velocity,
+        initial_linear_velocity=initial_linear_velocity,
+        initial_angular_velocity=initial_angular_velocity,
+        alpha=alpha,
+        beta=beta,
+        kappa=kappa,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _ukf_filter_impl(
+    traj: Trajectory,
+    *,
+    motion_model: str = "constant_velocity",
+    process_noise: float = 1000.0,
+    measurement_noise: float = 0.001,
+    initial_covariance: float = 1.0,
+    initial_velocity: ArrayLike | None = None,
+    initial_linear_velocity: ArrayLike | None = None,
+    initial_angular_velocity: ArrayLike | None = None,
+    alpha: float = 1e-3,
+    beta: float = 2.0,
+    kappa: float = 0.0,
+    sample_rate_hz: float = 100.0,
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
     """Unscented Kalman filter over translation and relative rotation vectors."""
 
     model = motion_model.lower().replace("-", "_")
@@ -241,6 +500,7 @@ def ukf_filter(
             "process_noise, measurement_noise, initial_covariance, alpha, "
             "and sample_rate_hz must be positive"
         )
+    total_start_ns = perf_counter_ns() if collect_timing else 0
     initial_motion = _ukf_initial_motion_vector(
         initial_velocity,
         initial_linear_velocity,
@@ -251,7 +511,7 @@ def ukf_filter(
     measurements = np.column_stack(
         [traj.positions, relative_rotvecs(traj.rotations, reference=reference)]
     )
-    filtered = _ukf_filter_measurements(
+    filtered_result = _ukf_filter_measurements(
         measurements,
         timestamps=traj.timestamps,
         motion_model=model,
@@ -263,13 +523,18 @@ def ukf_filter(
         kappa=kappa,
         sample_rate_hz=sample_rate_hz,
         initial_velocity=initial_motion,
+        collect_timing=collect_timing,
     )
+    if collect_timing:
+        filtered, per_pose_time_ns, _ = filtered_result
+    else:
+        filtered = filtered_result
     positions = filtered[:, :3]
     rotations = rotations_from_relative_rotvecs(filtered[:, 3:6], reference)
     canonical_model = (
         "constant_acceleration" if model in {"constant_acceleration", "ca"} else "constant_velocity"
     )
-    return traj.copy_with(
+    result = traj.copy_with(
         poses=make_poses(positions, rotations),
         name=f"{traj.name}__ukf",
         metadata={
@@ -287,6 +552,11 @@ def ukf_filter(
             },
         },
     )
+    if not collect_timing:
+        return result, None, 0
+    assert per_pose_time_ns is not None
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
 def one_euro_z_filter(
@@ -297,6 +567,49 @@ def one_euro_z_filter(
     derivative_deadband: float = 1.0,
     sample_rate_hz: float = 80.0,
 ) -> Trajectory:
+    result, _, _ = _one_euro_z_filter_impl(
+        traj,
+        min_cutoff=min_cutoff,
+        beta=beta,
+        d_cutoff=d_cutoff,
+        derivative_deadband=derivative_deadband,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=False,
+    )
+    return result
+
+
+def _run_one_euro_z_timed(
+    traj: Trajectory,
+    min_cutoff: float = 0.02,
+    beta: float = 6.0,
+    d_cutoff: float = 2.0,
+    derivative_deadband: float = 1.0,
+    sample_rate_hz: float = 80.0,
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _one_euro_z_filter_impl(
+        traj,
+        min_cutoff=min_cutoff,
+        beta=beta,
+        d_cutoff=d_cutoff,
+        derivative_deadband=derivative_deadband,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _one_euro_z_filter_impl(
+    traj: Trajectory,
+    *,
+    min_cutoff: float = 0.02,
+    beta: float = 6.0,
+    d_cutoff: float = 2.0,
+    derivative_deadband: float = 1.0,
+    sample_rate_hz: float = 80.0,
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
     """Causal adaptive low-pass filter for the Z translation channel.
 
     X/Y translation and orientation are intentionally preserved. This is useful
@@ -316,8 +629,9 @@ def one_euro_z_filter(
             "beta and derivative_deadband must be >= 0"
         )
 
+    total_start_ns = perf_counter_ns() if collect_timing else 0
     positions = traj.positions.copy()
-    positions[:, 2] = _one_euro_filter_1d(
+    z_result = _one_euro_filter_1d(
         positions[:, 2],
         timestamps=traj.timestamps,
         min_cutoff=min_cutoff,
@@ -325,8 +639,14 @@ def one_euro_z_filter(
         d_cutoff=d_cutoff,
         derivative_deadband=derivative_deadband,
         sample_rate_hz=sample_rate_hz,
+        collect_timing=collect_timing,
     )
-    return traj.copy_with(
+    if collect_timing:
+        filtered_z, per_pose_time_ns, _ = z_result
+    else:
+        filtered_z = z_result
+    positions[:, 2] = filtered_z
+    result = traj.copy_with(
         poses=make_poses(positions, traj.rotations),
         name=f"{traj.name}__one_euro_z",
         metadata={
@@ -340,6 +660,11 @@ def one_euro_z_filter(
             },
         },
     )
+    if not collect_timing:
+        return result, None, 0
+    assert per_pose_time_ns is not None
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
 def _moving_average(values: ArrayLike, window: int) -> ArrayF:
@@ -375,14 +700,22 @@ def _one_euro_filter_1d(
     d_cutoff: float,
     derivative_deadband: float,
     sample_rate_hz: float,
-) -> ArrayF:
+    collect_timing: bool = False,
+) -> ArrayF | tuple[ArrayF, ArrayI, int]:
+    total_start_ns = perf_counter_ns() if collect_timing else 0
     measurements = np.asarray(values, dtype=float)
     if measurements.ndim != 1:
         raise ValueError("one euro filter values must be one-dimensional")
     if measurements.shape[0] <= 1:
-        return measurements.copy()
+        result = measurements.copy()
+        if not collect_timing:
+            return result
+        total_time_ns = perf_counter_ns() - total_start_ns
+        return result, _uniform_time_series(result.shape[0], total_time_ns), total_time_ns
 
     result = np.empty_like(measurements)
+    per_pose_time_ns = np.zeros(measurements.shape[0], dtype=np.int64) if collect_timing else None
+    init_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
     result[0] = measurements[0]
     derivative_hat = 0.0
     if timestamps is not None:
@@ -394,8 +727,11 @@ def _one_euro_filter_1d(
             raise ValueError("timestamps must be strictly increasing")
     else:
         dt_values = np.full(measurements.shape[0] - 1, 1.0 / sample_rate_hz, dtype=float)
+    if per_pose_time_ns is not None:
+        per_pose_time_ns[0] += perf_counter_ns() - init_start_ns
 
     for idx, dt in enumerate(dt_values, start=1):
+        step_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
         derivative = (measurements[idx] - measurements[idx - 1]) / dt
         derivative_alpha = _lowpass_alpha(d_cutoff, dt)
         derivative_hat = derivative_alpha * derivative + (1.0 - derivative_alpha) * derivative_hat
@@ -403,7 +739,12 @@ def _one_euro_filter_1d(
         cutoff = min_cutoff + beta * effective_derivative
         value_alpha = _lowpass_alpha(cutoff, dt)
         result[idx] = value_alpha * measurements[idx] + (1.0 - value_alpha) * result[idx - 1]
-    return result
+        if per_pose_time_ns is not None:
+            per_pose_time_ns[idx] += perf_counter_ns() - step_start_ns
+    if per_pose_time_ns is None:
+        return result
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
 def _lowpass_alpha(cutoff: float, dt: float) -> float:
@@ -419,12 +760,38 @@ def _kalman_constant_velocity(
     measurement_noise: float,
     initial_covariance: float,
 ) -> ArrayF:
+    return _kalman_constant_velocity_impl(
+        values,
+        timestamps=timestamps,
+        process_noise=process_noise,
+        measurement_noise=measurement_noise,
+        initial_covariance=initial_covariance,
+        collect_timing=False,
+    )
+
+
+def _kalman_constant_velocity_impl(
+    values: ArrayLike,
+    *,
+    timestamps: ArrayLike | None,
+    process_noise: float,
+    measurement_noise: float,
+    initial_covariance: float,
+    collect_timing: bool,
+) -> ArrayF | tuple[ArrayF, ArrayI, int]:
+    total_start_ns = perf_counter_ns() if collect_timing else 0
     measurements = np.asarray(values, dtype=float)
     n, dims = measurements.shape
     if n == 1:
-        return measurements.copy()
+        result = measurements.copy()
+        if not collect_timing:
+            return result
+        total_time_ns = perf_counter_ns() - total_start_ns
+        return result, _uniform_time_series(n, total_time_ns), total_time_ns
 
     result = np.empty_like(measurements)
+    per_pose_time_ns = np.zeros(n, dtype=np.int64) if collect_timing else None
+    init_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
     state = np.zeros(dims * 2, dtype=float)
     state[:dims] = measurements[0]
     covariance = np.eye(dims * 2, dtype=float) * initial_covariance
@@ -432,6 +799,8 @@ def _kalman_constant_velocity(
     h[:, :dims] = np.eye(dims)
     r = np.eye(dims, dtype=float) * measurement_noise
     result[0] = measurements[0]
+    if per_pose_time_ns is not None:
+        per_pose_time_ns[0] += perf_counter_ns() - init_start_ns
 
     if timestamps is None:
         dt_values = np.ones(n - 1, dtype=float)
@@ -442,6 +811,7 @@ def _kalman_constant_velocity(
 
     identity = np.eye(dims * 2, dtype=float)
     for idx, dt in enumerate(dt_values, start=1):
+        step_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
         f = np.eye(dims * 2, dtype=float)
         f[:dims, dims:] = np.eye(dims) * dt
         q_1d = np.array(
@@ -459,7 +829,12 @@ def _kalman_constant_velocity(
         state = state + gain @ innovation
         covariance = (identity - gain @ h) @ covariance
         result[idx] = state[:dims]
-    return result
+        if per_pose_time_ns is not None:
+            per_pose_time_ns[idx] += perf_counter_ns() - step_start_ns
+    if per_pose_time_ns is None:
+        return result
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
 def _ukf_initial_motion_vector(
@@ -507,13 +882,19 @@ def _ukf_filter_measurements(
     kappa: float,
     sample_rate_hz: float,
     initial_velocity: ArrayLike | None = None,
-) -> ArrayF:
+    collect_timing: bool = False,
+) -> ArrayF | tuple[ArrayF, ArrayI, int]:
+    total_start_ns = perf_counter_ns() if collect_timing else 0
     z_values = np.asarray(measurements, dtype=float)
     if z_values.ndim != 2:
         raise ValueError("UKF measurements must have shape (N, D)")
     count, dims = z_values.shape
     if count <= 1:
-        return z_values.copy()
+        result = z_values.copy()
+        if not collect_timing:
+            return result
+        total_time_ns = perf_counter_ns() - total_start_ns
+        return result, _uniform_time_series(count, total_time_ns), total_time_ns
 
     order = 3 if motion_model in {"constant_acceleration", "ca"} else 2
     state_dim = dims * order
@@ -535,9 +916,14 @@ def _ukf_filter_measurements(
 
     dt_values = _dt_values(timestamps, count, sample_rate_hz)
     result = np.empty_like(z_values)
+    per_pose_time_ns = np.zeros(count, dtype=np.int64) if collect_timing else None
+    init_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
     result[0] = z_values[0]
+    if per_pose_time_ns is not None:
+        per_pose_time_ns[0] += perf_counter_ns() - init_start_ns
 
     for idx, dt in enumerate(dt_values, start=1):
+        step_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
         sigma_points = _ukf_sigma_points(state, covariance, scale)
         predicted_sigma = np.array(
             [_ukf_predict_sigma(point, dims, dt, motion_model) for point in sigma_points],
@@ -566,7 +952,31 @@ def _ukf_filter_measurements(
         state = state_pred + gain @ innovation
         covariance = _symmetrize(covariance_pred - gain @ innovation_covariance @ gain.T)
         result[idx] = state[:dims]
-    return result
+        if per_pose_time_ns is not None:
+            per_pose_time_ns[idx] += perf_counter_ns() - step_start_ns
+    if per_pose_time_ns is None:
+        return result
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
+
+
+def _uniform_time_series(count: int, total_time_ns: int) -> ArrayI:
+    if count <= 0:
+        return np.zeros(0, dtype=np.int64)
+    base, remainder = divmod(max(int(total_time_ns), 0), count)
+    values = np.full(count, base, dtype=np.int64)
+    if remainder:
+        values[:remainder] += 1
+    return values
+
+
+def _finalize_time_series(partial_time_ns: ArrayI, total_time_ns: int) -> ArrayI:
+    finalized = np.asarray(partial_time_ns, dtype=np.int64).copy()
+    measured_time_ns = int(finalized.sum(dtype=np.int64))
+    remaining_time_ns = max(int(total_time_ns) - measured_time_ns, 0)
+    if remaining_time_ns and finalized.size:
+        finalized += _uniform_time_series(finalized.size, remaining_time_ns)
+    return finalized
 
 
 def _dt_values(timestamps: ArrayLike | None, count: int, sample_rate_hz: float) -> ArrayF:

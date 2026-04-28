@@ -2,7 +2,7 @@
 
 from rt_filter.batch import run_batch, run_batch_config
 from rt_filter.evaluation import compare_filter_result, delta_metrics, trajectory_metrics
-from rt_filter.filters import available_filters, run_filter
+from rt_filter.filters import available_filters, run_filter, run_filter_timed
 from rt_filter.io import read_trajectory, write_trajectory
 from rt_filter.trajectory import Trajectory
 from rt_filter.vtk_export import trajectory_point_data, write_vtk_unstructured_grid
@@ -16,6 +16,7 @@ __all__ = [
     "run_batch",
     "run_batch_config",
     "run_filter",
+    "run_filter_timed",
     "trajectory_metrics",
     "trajectory_point_data",
     "write_vtk_unstructured_grid",
