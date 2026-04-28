@@ -962,6 +962,19 @@ class MainWindow(QMainWindow):
                 ],
             ),
             (
+                "butterworth_z",
+                [
+                    {
+                        "cutoff_hz": 18.0,
+                        "order": 2,
+                    },
+                    {
+                        "cutoff_hz": 22.0,
+                        "order": 2,
+                    },
+                ],
+            ),
+            (
                 "adaptive_kalman_z",
                 [
                     {

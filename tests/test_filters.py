@@ -20,6 +20,29 @@ def _noisy_static(seed: int = 7) -> Trajectory:
     return Trajectory(make_poses(positions, rotations), timestamps=timestamps, name="static")
 
 
+def _noisy_dynamic_z_wave(seed: int = 11) -> tuple[Trajectory, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    sample_rate_hz = 100.0
+    count = 500
+    timestamps = np.arange(count, dtype=float) / sample_rate_hz
+    positions = np.empty((count, 3), dtype=float)
+    positions[:, 0] = 100.0 + 0.15 * np.sin(2.0 * np.pi * 0.6 * timestamps) + rng.normal(scale=0.01, size=count)
+    positions[:, 1] = 200.0 + 0.12 * np.cos(2.0 * np.pi * 0.4 * timestamps) + rng.normal(scale=0.01, size=count)
+    clean_z = (
+        300.0
+        + 0.45 * np.sin(2.0 * np.pi * 12.0 * timestamps)
+        + 0.12 * np.sin(2.0 * np.pi * 6.0 * timestamps + 0.4)
+    )
+    high_freq_noise = 0.16 * np.sin(2.0 * np.pi * 34.0 * timestamps + 0.2)
+    random_noise = rng.normal(scale=0.035, size=count)
+    positions[:, 2] = clean_z + high_freq_noise + random_noise
+    rotations = Rotation.from_rotvec(rng.normal(scale=np.deg2rad(0.02), size=(count, 3)))
+    return (
+        Trajectory(make_poses(positions, rotations), timestamps=timestamps, name="dynamic_z_wave"),
+        clean_z,
+    )
+
+
 def test_moving_average_reduces_static_acceleration():
     traj = _noisy_static()
     filtered = run_filter("moving_average", traj, {"window": 9})
@@ -47,6 +70,7 @@ def test_all_filters_keep_shape():
             },
         ),
         ("one_euro_z", {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0}),
+        ("butterworth_z", {"cutoff_hz": 20.0, "order": 2}),
         (
             "adaptive_kalman_z",
             {
@@ -96,6 +120,33 @@ def test_one_euro_z_derivative_deadband_improves_static_denoising():
     )
 
     assert with_deadband.positions[:, 2].std() < without_deadband.positions[:, 2].std()
+
+
+def test_butterworth_z_preserves_xy_and_main_dynamic_shape():
+    traj, clean_z = _noisy_dynamic_z_wave()
+
+    filtered = run_filter("butterworth_z", traj, {"cutoff_hz": 20.0, "order": 2})
+
+    np.testing.assert_allclose(filtered.positions[:, :2], traj.positions[:, :2])
+    np.testing.assert_allclose(filtered.rotations.as_matrix(), traj.rotations.as_matrix())
+
+    raw_rmse = float(np.sqrt(np.mean((traj.positions[:, 2] - clean_z) ** 2)))
+    filtered_rmse = float(np.sqrt(np.mean((filtered.positions[:, 2] - clean_z) ** 2)))
+    assert filtered_rmse < raw_rmse * 0.55
+
+    clean_centered = clean_z - np.mean(clean_z)
+    raw_corr = float(np.corrcoef(clean_centered, traj.positions[:, 2] - np.mean(traj.positions[:, 2]))[0, 1])
+    filtered_corr = float(
+        np.corrcoef(clean_centered, filtered.positions[:, 2] - np.mean(filtered.positions[:, 2]))[0, 1]
+    )
+    assert filtered_corr > raw_corr
+    assert filtered_corr > 0.97
+
+
+def test_butterworth_z_rejects_cutoff_above_nyquist():
+    traj = _noisy_static()
+    with pytest.raises(ValueError, match="Nyquist"):
+        run_filter("butterworth_z", traj, {"cutoff_hz": 60.0, "order": 2, "sample_rate_hz": 100.0})
 
 
 def test_adaptive_kalman_z_reduces_z_noise_without_changing_xy_or_rotation():

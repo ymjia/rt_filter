@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy.signal import savgol_filter
+from scipy.signal import butter, savgol_filter, sosfiltfilt
 from scipy.spatial.transform import Rotation
 
 from rt_filter.se3 import (
@@ -133,6 +133,18 @@ def available_filters() -> dict[str, FilterInfo]:
                 "sample_rate_hz": 80.0,
             },
         ),
+        "butterworth_z": FilterInfo(
+            name="butterworth_z",
+            description=(
+                "Offline zero-phase Butterworth low-pass filtering on Z translation only "
+                "to preserve the main waveform while suppressing higher-frequency noise."
+            ),
+            defaults={
+                "cutoff_hz": 20.0,
+                "order": 2,
+                "sample_rate_hz": 100.0,
+            },
+        ),
         "adaptive_kalman_z": FilterInfo(
             name="adaptive_kalman_z",
             description=(
@@ -183,6 +195,7 @@ def run_filter(
         "ukf": ukf_filter,
         "ukf_cv": ukf_filter,
         "one_euro_z": one_euro_z_filter,
+        "butterworth_z": butterworth_z_filter,
         "adaptive_kalman_z": adaptive_kalman_z_filter,
     }
     if normalized not in registry:
@@ -209,6 +222,7 @@ def run_filter_timed(
         "ukf": _run_ukf_timed,
         "ukf_cv": _run_ukf_timed,
         "one_euro_z": _run_one_euro_z_timed,
+        "butterworth_z": _run_butterworth_z_timed,
         "adaptive_kalman_z": _run_adaptive_kalman_z_timed,
     }
     if normalized not in registry:
@@ -1044,6 +1058,91 @@ def adaptive_kalman_z_filter(
     return result
 
 
+def butterworth_z_filter(
+    traj: Trajectory,
+    cutoff_hz: float = 20.0,
+    order: int = 2,
+    sample_rate_hz: float = 100.0,
+) -> Trajectory:
+    result, _, _ = _butterworth_z_filter_impl(
+        traj,
+        cutoff_hz=cutoff_hz,
+        order=order,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=False,
+    )
+    return result
+
+
+def _run_butterworth_z_timed(
+    traj: Trajectory,
+    cutoff_hz: float = 20.0,
+    order: int = 2,
+    sample_rate_hz: float = 100.0,
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _butterworth_z_filter_impl(
+        traj,
+        cutoff_hz=cutoff_hz,
+        order=order,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _butterworth_z_filter_impl(
+    traj: Trajectory,
+    *,
+    cutoff_hz: float = 20.0,
+    order: int = 2,
+    sample_rate_hz: float = 100.0,
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
+    """Offline zero-phase Butterworth low-pass filter for the Z translation channel only.
+
+    The filter preserves X/Y translation and orientation, and targets dynamic
+    trajectories where the main Z waveform should remain intact while
+    higher-frequency noise is attenuated.
+    """
+
+    order = int(order)
+    if cutoff_hz <= 0.0 or sample_rate_hz <= 0.0 or order < 1:
+        raise ValueError("cutoff_hz and sample_rate_hz must be positive; order must be >= 1")
+
+    total_start_ns = perf_counter_ns() if collect_timing else 0
+    positions = traj.positions.copy()
+    effective_sample_rate_hz = _effective_sample_rate_hz(
+        traj.timestamps,
+        positions.shape[0],
+        sample_rate_hz,
+    )
+    filtered_z = _zero_phase_butterworth_filter_1d(
+        positions[:, 2],
+        cutoff_hz=cutoff_hz,
+        order=order,
+        sample_rate_hz=effective_sample_rate_hz,
+    )
+    positions[:, 2] = filtered_z
+    result = traj.copy_with(
+        poses=make_poses(positions, traj.rotations),
+        name=f"{traj.name}__butterworth_z",
+        metadata={
+            "filter": "butterworth_z",
+            "params": {
+                "cutoff_hz": cutoff_hz,
+                "order": order,
+                "sample_rate_hz": sample_rate_hz,
+                "effective_sample_rate_hz": effective_sample_rate_hz,
+            },
+        },
+    )
+    if not collect_timing:
+        return result, None, 0
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _uniform_time_series(traj.count, total_time_ns), total_time_ns
+
+
 def _run_adaptive_kalman_z_timed(
     traj: Trajectory,
     process_noise: float = 1e-12,
@@ -1306,6 +1405,34 @@ def _adaptive_kalman_filter_1d(
     return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
+def _zero_phase_butterworth_filter_1d(
+    values: ArrayLike,
+    *,
+    cutoff_hz: float,
+    order: int,
+    sample_rate_hz: float,
+) -> ArrayF:
+    measurements = np.asarray(values, dtype=float)
+    if measurements.ndim != 1:
+        raise ValueError("Butterworth Z filter values must be one-dimensional")
+    count = measurements.shape[0]
+    if count <= 2:
+        return measurements.copy()
+
+    nyquist_hz = 0.5 * float(sample_rate_hz)
+    if cutoff_hz >= nyquist_hz:
+        raise ValueError(f"cutoff_hz must be smaller than Nyquist frequency ({nyquist_hz:.6g} Hz)")
+
+    sos = butter(int(order), cutoff_hz, btype="lowpass", output="sos", fs=sample_rate_hz)
+    padlen = min(_sosfiltfilt_padlen(sos), count - 1)
+    if padlen <= 0:
+        return measurements.copy()
+    return np.asarray(
+        sosfiltfilt(sos, measurements, axis=0, padtype="odd", padlen=padlen),
+        dtype=float,
+    )
+
+
 def _lowpass_alpha(cutoff: float, dt: float) -> float:
     tau = 1.0 / (2.0 * np.pi * cutoff)
     return float(dt / (dt + tau))
@@ -1548,6 +1675,26 @@ def _dt_values(timestamps: ArrayLike | None, count: int, sample_rate_hz: float) 
     if np.any(dt <= 0):
         raise ValueError("timestamps must be strictly increasing")
     return dt.astype(float)
+
+
+def _effective_sample_rate_hz(
+    timestamps: ArrayLike | None,
+    count: int,
+    sample_rate_hz: float,
+) -> float:
+    if timestamps is None or count <= 1:
+        return float(sample_rate_hz)
+    dt = _dt_values(timestamps, count, sample_rate_hz)
+    median_dt = float(np.median(dt))
+    if median_dt <= 0.0:
+        raise ValueError("timestamps must produce a positive median dt")
+    return float(1.0 / median_dt)
+
+
+def _sosfiltfilt_padlen(sos: ArrayF) -> int:
+    zero_count_num = int(np.sum(np.isclose(sos[:, 2], 0.0)))
+    zero_count_den = int(np.sum(np.isclose(sos[:, 5], 0.0)))
+    return int(3 * (2 * sos.shape[0] + 1 - min(zero_count_num, zero_count_den)))
 
 
 def _ukf_sigma_points(state: ArrayF, covariance: ArrayF, scale: float) -> ArrayF:

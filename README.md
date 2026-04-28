@@ -35,6 +35,7 @@ CSV 可使用以下任一形式：
 rt-filter filter input.csv outputs/filtered.csv --algorithm moving_average --param window=9
 rt-filter filter input.csv outputs/filtered.csv --algorithm savgol --param window=11 --param polyorder=2
 rt-filter filter input.csv outputs/filtered.csv --algorithm exponential --param alpha=0.25
+rt-filter filter input.csv outputs/filtered.csv --algorithm butterworth_z --param cutoff_hz=20.0 --param order=2
 rt-filter filter input.csv outputs/filtered.csv --algorithm one_euro_z --param min_cutoff=0.02 --param beta=6.0 --param d_cutoff=2.0 --param derivative_deadband=1.0
 ```
 
@@ -57,6 +58,7 @@ rt-filter catalog
 | `exponential` | `alpha` | 因果指数平滑，只使用当前和历史信息 | 在线实时滤波、不能使用未来帧的场景 | 会产生滞后；速度越高或 `alpha` 越小，位置滞后越明显 |
 | `kalman_cv` | `process_noise`, `measurement_noise`, `initial_covariance` | 常速度模型 Kalman 滤波；同时估计位置/旋转向量及其速度 | 静态或低速数据、近似匀速轨迹、需要较强抖动压制的稳定性测试 | 模型假设不适合剧烈加减速；参数过强会把真实运动当噪声 |
 | `ukf` | `motion_model`, `process_noise`, `measurement_noise`, `initial_covariance`, `initial_velocity`, `initial_linear_velocity`, `initial_angular_velocity`, `alpha`, `beta`, `kappa` | 无迹 Kalman 滤波；对平移和相对旋转向量使用匀速或匀加速状态预测 | 位姿变化连续、测量噪声较大、希望显式引入运动连续性约束的轨迹 | 当前仅使用位姿测量；若无关节/控制量，复杂机械臂运动学模型无法真正发挥 |
+| `butterworth_z` | `cutoff_hz`, `order`, `sample_rate_hz` | 离线零相位 Butterworth 低通；只改 Z，保留 X/Y 和姿态 | 动态轨迹里 Z 含有正常周期波动、希望保住主波形并只削掉更高频噪声 | 不是在线算法；`cutoff_hz` 设得过低会把真实 Z 波形一起压平 |
 | `one_euro_z` | `min_cutoff`, `beta`, `d_cutoff`, `derivative_deadband`, `sample_rate_hz` | Z 方向 One Euro 自适应低通；只改 Z，保留 X/Y 和姿态 | Z 噪声明显大于 X/Y、需要在线实时且减少拖影的静止或慢速转向场景 | 只处理 Z 随机噪声；`min_cutoff` 太低或 `derivative_deadband` 太大仍会产生滞后 |
 | `adaptive_kalman_z` | `process_noise`, `measurement_noise`, `initial_covariance`, `motion_process_gain`, `velocity_deadband`, `innovation_scale`, `innovation_gate`, `max_measurement_scale`, `sample_rate_hz` | Z 方向自适应标量 Kalman；只改 Z，带创新门控与可选速度自适应 | 当前默认更偏静态场景；适合 Z 噪声明显更大、且希望比 One Euro 更强抑制慢漂和偶发尖峰的场景 | 静态默认参数在真实动态轨迹上可能过强；拿到真实动态数据后需要重新整定 |
 
@@ -137,6 +139,31 @@ params:
 ```
 
 工程判断：如果 `jerk_rms_ratio` 很低，但 `to_raw_translation_rmse` 和 `to_reference_translation_rmse` 明显变大，通常说明指数滤波引入了滞后。
+
+### `butterworth_z`
+
+`butterworth_z` 是一个只作用在 `z` 平移通道上的离线零相位低通滤波器。它的目标不是把 `z` 轴压到尽量平，而是尽量保住 `z` 的主波形轮廓，只削掉明显更高频的噪声；`x/y` 和姿态保持原样。
+
+适合：
+
+- 动态轨迹里 `z` 有明确正常波动
+- 允许离线处理，不能接受明显相位延迟
+- 希望按频带来区分“正常波形”和“高频噪声”
+
+参数含义：
+
+- `cutoff_hz`：低通截止频率，应该高于目标主波形频率，但低于噪声主频
+- `order`：Butterworth 阶数；当前建议先从 `2` 开始
+- `sample_rate_hz`：无时间戳时的回退采样率；如果轨迹自带时间戳，当前实现会优先按时间戳估计有效采样率
+
+推荐先试：
+
+```yaml
+name: butterworth_z
+params:
+  cutoff_hz: [18.0, 22.0, 26.0]
+  order: [2]
+```
 
 ### `kalman_cv`
 
@@ -259,7 +286,7 @@ params:
 | 目标 | 优先尝试 | 观察指标 |
 | --- | --- | --- |
 | 静止点云稳定性、极差/标准差压制 | `adaptive_kalman_z`, `one_euro_z`, `kalman_cv`, `ukf`, `moving_average` | `filtered_range_z`, `std_norm_ratio`, `z_std_ratio`, `to_raw_translation_rmse` |
-| 离线运动轨迹降噪且保留形状 | `savgol` | `to_reference_translation_rmse`, `to_raw_translation_rmse`, `jerk_rms_ratio` |
+| 离线运动轨迹降噪且保留形状 | `butterworth_z`, `savgol` | `to_reference_translation_rmse`, `to_raw_translation_rmse`, `jerk_rms_ratio` |
 | 在线实时轻量滤波 | `one_euro_z`, `exponential` | `to_raw_translation_rmse`, `to_reference_translation_rmse`, 延迟表现 |
 | 快速建立基线 | `moving_average` | `acceleration_rms_ratio`, `jerk_rms_ratio`, `to_raw_translation_max` |
 | 有 Leica 或目标轨迹参考 | 多算法批量比较 | `to_reference_translation_rmse`, `reference_rmse_improvement` |
