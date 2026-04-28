@@ -64,6 +64,9 @@ from matplotlib.figure import Figure
 
 METRIC_COLUMNS = [
     "label",
+    "x_range",
+    "y_range",
+    "z_range",
     "to_raw_translation_rmse",
     "to_raw_translation_max",
     "acceleration_rms_ratio",
@@ -496,6 +499,107 @@ class DetachedPlotWindow(QWidget):
         super().closeEvent(event)
 
 
+class MetricsTableWidget(QWidget):
+    def __init__(self, columns: list[str]) -> None:
+        super().__init__()
+        self.columns = columns
+        self._syncing_selection = False
+
+        self.frozen_table = QTableWidget(0, 1)
+        self.frozen_table.setHorizontalHeaderLabels([columns[0]])
+        self.frozen_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.frozen_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.frozen_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.frozen_table.setFocusPolicy(Qt.NoFocus)
+        self.frozen_table.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+
+        self.main_table = QTableWidget(0, len(columns))
+        self.main_table.setHorizontalHeaderLabels(columns)
+        self.main_table.setColumnHidden(0, True)
+        self.main_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.main_table.horizontalHeader().setStretchLastSection(True)
+
+        for table in (self.frozen_table, self.main_table):
+            table.verticalHeader().setVisible(False)
+            table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            table.setSelectionMode(QAbstractItemView.SingleSelection)
+            table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            table.setWordWrap(False)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.frozen_table)
+        layout.addWidget(self.main_table, 1)
+
+        self.main_table.verticalScrollBar().valueChanged.connect(
+            self.frozen_table.verticalScrollBar().setValue
+        )
+        self.frozen_table.verticalScrollBar().valueChanged.connect(
+            self.main_table.verticalScrollBar().setValue
+        )
+        self.main_table.itemSelectionChanged.connect(self._sync_from_main_selection)
+        self.frozen_table.itemSelectionChanged.connect(self._sync_from_frozen_selection)
+        self.main_table.verticalHeader().sectionResized.connect(self._sync_row_height)
+        self.set_first_column_width(320)
+
+    def set_rows(self, rows: list[dict[str, Any]]) -> None:
+        self._syncing_selection = True
+        try:
+            self.frozen_table.setRowCount(0)
+            self.main_table.setRowCount(0)
+            for row_data in rows:
+                row = self.main_table.rowCount()
+                self.main_table.insertRow(row)
+                self.frozen_table.insertRow(row)
+                for col, key in enumerate(self.columns):
+                    value = row_data.get(key, "")
+                    self.main_table.setItem(row, col, _make_table_item(value))
+                    if col == 0:
+                        self.frozen_table.setItem(row, 0, _make_table_item(value))
+            self.main_table.clearSelection()
+            self.frozen_table.clearSelection()
+            self._sync_all_row_heights()
+        finally:
+            self._syncing_selection = False
+
+    def set_first_column_width(self, width: int) -> None:
+        clamped = max(width, 220)
+        self.frozen_table.setColumnWidth(0, clamped)
+        self.main_table.setColumnWidth(0, clamped)
+        frame_width = self.frozen_table.frameWidth() * 2
+        self.frozen_table.setFixedWidth(clamped + frame_width + 1)
+
+    def _sync_all_row_heights(self) -> None:
+        for row in range(self.main_table.rowCount()):
+            self.frozen_table.setRowHeight(row, self.main_table.rowHeight(row))
+
+    def _sync_row_height(self, row: int, _old_size: int, new_size: int) -> None:
+        self.frozen_table.setRowHeight(row, new_size)
+
+    def _sync_from_main_selection(self) -> None:
+        self._sync_selection(self.main_table, self.frozen_table, target_column=0)
+
+    def _sync_from_frozen_selection(self) -> None:
+        target_column = 1 if self.main_table.columnCount() > 1 else 0
+        self._sync_selection(self.frozen_table, self.main_table, target_column=target_column)
+
+    def _sync_selection(self, source: QTableWidget, target: QTableWidget, *, target_column: int) -> None:
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            target.clearSelection()
+            selected_rows = sorted({index.row() for index in source.selectedIndexes()})
+            for row in selected_rows:
+                target.selectRow(row)
+            current_row = source.currentRow()
+            if current_row >= 0:
+                target.setCurrentCell(current_row, target_column)
+        finally:
+            self._syncing_selection = False
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -535,6 +639,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         self._persist_input_state()
         super().closeEvent(event)
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._update_metric_label_width()
 
     def _build_ui(self) -> None:
         root = QSplitter(Qt.Horizontal)
@@ -628,6 +736,19 @@ class MainWindow(QMainWindow):
         run_button = QPushButton("Run Analysis")
         run_button.clicked.connect(self.run_analysis)
         layout.addWidget(run_button)
+
+        export_row = QHBoxLayout()
+        export_row.setContentsMargins(0, 0, 0, 0)
+        export_row.setSpacing(6)
+        self.paraview_button = QPushButton("Generate ParaView Script")
+        self.paraview_button.clicked.connect(self.generate_paraview_script)
+        self.paraview_button.setFixedHeight(28)
+        export_row.addWidget(self.paraview_button)
+        self.open_output_button = QPushButton("Open Output Dir")
+        self.open_output_button.clicked.connect(self.open_output_dir)
+        self.open_output_button.setFixedHeight(28)
+        export_row.addWidget(self.open_output_button)
+        layout.addLayout(export_row)
         return group
 
     def _center_panel(self) -> QWidget:
@@ -637,11 +758,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
         self.tabs = QTabWidget()
 
-        self.metric_table = QTableWidget(0, len(METRIC_COLUMNS))
-        self.metric_table.setHorizontalHeaderLabels(METRIC_COLUMNS)
-        self.metric_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.metric_table.horizontalHeader().setStretchLastSection(True)
-        self.metric_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.metric_table = MetricsTableWidget(METRIC_COLUMNS)
         self.tabs.addTab(self.metric_table, "Metrics")
 
         self.conclusion_text = QTextEdit()
@@ -652,19 +769,6 @@ class MainWindow(QMainWindow):
         self.detail_text.setReadOnly(True)
         self.tabs.addTab(self.detail_text, "Run Files")
         layout.addWidget(self.tabs, 1)
-
-        export_row = QHBoxLayout()
-        export_row.setContentsMargins(0, 0, 0, 0)
-        export_row.setSpacing(8)
-        self.paraview_button = QPushButton("Generate ParaView Script")
-        self.paraview_button.clicked.connect(self.generate_paraview_script)
-        self.paraview_button.setFixedHeight(28)
-        export_row.addWidget(self.paraview_button)
-        open_button = QPushButton("Open Output Dir")
-        open_button.clicked.connect(self.open_output_dir)
-        open_button.setFixedHeight(28)
-        export_row.addWidget(open_button)
-        layout.addLayout(export_row)
         return panel
 
     def _right_panel(self) -> QWidget:
@@ -863,20 +967,57 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Open Failed", f"Could not open output directory:\n{path}\n{exc}")
 
     def update_results(self) -> None:
-        self.metric_table.setRowCount(0)
-        for result in self.results:
-            row = self.metric_table.rowCount()
-            self.metric_table.insertRow(row)
-            table_row = result.table_row()
-            for col, key in enumerate(METRIC_COLUMNS):
-                value = table_row.get(key, "")
-                item = QTableWidgetItem(_format_cell(value))
-                item.setData(Qt.UserRole, value)
-                self.metric_table.setItem(row, col, item)
+        self.metric_table.set_rows(self._metric_rows())
+        self._update_metric_label_width()
         self.conclusion_text.setPlainText("\n".join(analysis_conclusions(self.results)))
         self._update_detail_text()
         self._refresh_curve_table()
         self.update_plot()
+
+    def _metric_rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if self.raw is not None and self.results:
+            rows.append(self._raw_metric_row())
+        rows.extend(result.table_row() for result in self.results)
+        return rows
+
+    def _raw_metric_row(self) -> dict[str, Any]:
+        if self.raw is None:
+            return {}
+        metrics = trajectory_metrics(self.raw)
+        row: dict[str, Any] = {
+            "label": "raw",
+            "x_range": metrics["range_x"],
+            "y_range": metrics["range_y"],
+            "z_range": metrics["range_z"],
+            "to_raw_translation_rmse": 0.0,
+            "to_raw_translation_max": 0.0,
+            "acceleration_rms_ratio": 1.0,
+            "jerk_rms_ratio": 1.0,
+            "compute_total_ms": "",
+            "compute_mean_us": "",
+            "compute_p95_us": "",
+            "compute_max_us": "",
+            "to_raw_x_rmse": 0.0,
+            "to_raw_y_rmse": 0.0,
+            "to_raw_z_rmse": 0.0,
+            "x_jerk_rms_ratio": 1.0,
+            "y_jerk_rms_ratio": 1.0,
+            "z_jerk_rms_ratio": 1.0,
+            "to_reference_translation_rmse": "",
+            "reference_rmse_improvement": "",
+        }
+        if self.results:
+            raw_reference_rmse = self.results[0].metrics.get("raw_to_reference_translation_rmse")
+            if raw_reference_rmse is not None:
+                row["to_reference_translation_rmse"] = raw_reference_rmse
+                row["reference_rmse_improvement"] = 0.0
+        return row
+
+    def _update_metric_label_width(self) -> None:
+        if not hasattr(self, "metric_table"):
+            return
+        self.metric_table.set_first_column_width(max(int(self.width() * 0.25), 240))
 
     def update_plot(self) -> None:
         self._render_plot_to_canvas(self.canvas)
@@ -1317,6 +1458,14 @@ def _time_axis_scale(max_time_ns: int) -> tuple[float, str]:
     if max_time_ns >= 1_000:
         return 1_000.0, "us"
     return 1.0, "ns"
+
+
+def _make_table_item(value: Any) -> QTableWidgetItem:
+    item = QTableWidgetItem(_format_cell(value))
+    item.setData(Qt.UserRole, value)
+    if isinstance(value, str) and value:
+        item.setToolTip(value)
+    return item
 
 
 def _format_cell(value: Any) -> str:

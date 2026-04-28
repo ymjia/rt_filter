@@ -44,6 +44,9 @@ class FilterAnalysisResult:
     def table_row(self) -> dict[str, Any]:
         return {
             "label": self.label,
+            "x_range": self.metrics.get("filtered_range_x", self.metrics.get("range_x", "")),
+            "y_range": self.metrics.get("filtered_range_y", self.metrics.get("range_y", "")),
+            "z_range": self.metrics.get("filtered_range_z", self.metrics.get("range_z", "")),
             "algorithm": self.spec.algorithm,
             "params": json.dumps(self.spec.params, ensure_ascii=False, sort_keys=True),
             **self.metrics,
