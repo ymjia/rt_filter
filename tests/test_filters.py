@@ -142,6 +142,17 @@ def test_one_euro_z_cpp_defaults_match_tuned_cpp_parameters():
     }
 
 
+def test_one_euro_defaults_match_tuned_python_parameters():
+    defaults = available_filters()["one_euro"].defaults
+    assert defaults == {
+        "min_cutoff": 1.0,
+        "beta": 10.0,
+        "d_cutoff": 8.0,
+        "derivative_deadband": 0.02,
+        "sample_rate_hz": 100.0,
+    }
+
+
 def test_one_euro_z_defaults_match_tuned_python_parameters():
     defaults = available_filters()["one_euro_z"].defaults
     assert defaults == {
@@ -151,6 +162,26 @@ def test_one_euro_z_defaults_match_tuned_python_parameters():
         "derivative_deadband": 0.02,
         "sample_rate_hz": 100.0,
     }
+
+
+def test_one_euro_without_params_uses_tuned_defaults():
+    traj = _noisy_static()
+
+    implicit = run_filter("one_euro", traj)
+    explicit = run_filter(
+        "one_euro",
+        traj,
+        {
+            "min_cutoff": 1.0,
+            "beta": 10.0,
+            "d_cutoff": 8.0,
+            "derivative_deadband": 0.02,
+            "sample_rate_hz": 100.0,
+        },
+    )
+
+    np.testing.assert_allclose(implicit.positions, explicit.positions)
+    np.testing.assert_allclose(implicit.rotations.as_matrix(), explicit.rotations.as_matrix())
 
 
 def test_one_euro_z_without_params_uses_tuned_defaults():
