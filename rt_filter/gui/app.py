@@ -414,6 +414,25 @@ class PlotCanvas(FigureCanvas):
             if ax.axison
         }
 
+    def capture_view_limits(self) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+        return [
+            (
+                tuple(float(value) for value in ax.get_xlim()),
+                tuple(float(value) for value in ax.get_ylim()),
+            )
+            for ax in self.figure.axes
+            if ax.axison
+        ]
+
+    def restore_view_limits(
+        self,
+        limits: list[tuple[tuple[float, float], tuple[float, float]]],
+    ) -> None:
+        axes = [ax for ax in self.figure.axes if ax.axison]
+        for ax, (x_limits, y_limits) in zip(axes, limits, strict=False):
+            ax.set_xlim(x_limits)
+            ax.set_ylim(y_limits)
+
     def _on_scroll(self, event: Any) -> None:
         if event.inaxes is None or event.xdata is None or event.ydata is None:
             return
@@ -1078,12 +1097,13 @@ class MainWindow(QMainWindow):
             return
         self.metric_table.set_first_column_width(max(int(self.width() * 0.25), 240))
 
-    def update_plot(self) -> None:
-        self._render_plot_to_canvas(self.canvas)
+    def update_plot(self, *, preserve_view: bool = False) -> None:
+        self._render_plot_to_canvas(self.canvas, preserve_view=preserve_view)
         if self.detached_plot_window is not None:
-            self._render_plot_to_canvas(self.detached_plot_window.canvas)
+            self._render_plot_to_canvas(self.detached_plot_window.canvas, preserve_view=preserve_view)
 
-    def _render_plot_to_canvas(self, canvas: PlotCanvas) -> None:
+    def _render_plot_to_canvas(self, canvas: PlotCanvas, *, preserve_view: bool = False) -> None:
+        saved_view_limits = canvas.capture_view_limits() if preserve_view else []
         if self.raw is None or not self.results:
             canvas.plot_empty("No results")
             if canvas is self.canvas:
@@ -1105,6 +1125,9 @@ class MainWindow(QMainWindow):
             canvas.plot_compute_times(self.results, visible_labels)
         else:
             canvas.plot_empty("Unknown chart")
+        if saved_view_limits:
+            canvas.restore_view_limits(saved_view_limits)
+            canvas.draw_idle()
 
     def open_detached_plot_window(self) -> None:
         if self.detached_plot_window is None:
@@ -1178,19 +1201,19 @@ class MainWindow(QMainWindow):
     def _set_curve_visible(self, label: str, visible: bool) -> None:
         self.curve_visibility[label] = visible
         if not self._updating_curve_table:
-            self.update_plot()
+            self.update_plot(preserve_view=True)
 
     def show_all_curves(self) -> None:
         for label in self._current_curve_labels():
             self.curve_visibility[label] = True
         self._refresh_curve_table()
-        self.update_plot()
+        self.update_plot(preserve_view=True)
 
     def hide_all_curves(self) -> None:
         for label in self._current_curve_labels():
             self.curve_visibility[label] = False
         self._refresh_curve_table()
-        self.update_plot()
+        self.update_plot(preserve_view=True)
 
     def _append_inputs(self, paths: list[Path]) -> None:
         added = False
@@ -1295,10 +1318,16 @@ class MainWindow(QMainWindow):
                 "one_euro_z",
                 [
                     {
-                        "min_cutoff": 0.02,
-                        "beta": 6.0,
-                        "d_cutoff": 2.0,
-                        "derivative_deadband": 1.0,
+                        "min_cutoff": 1.0,
+                        "beta": 10.0,
+                        "d_cutoff": 8.0,
+                        "derivative_deadband": 0.02,
+                    },
+                    {
+                        "min_cutoff": 2.0,
+                        "beta": 10.0,
+                        "d_cutoff": 8.0,
+                        "derivative_deadband": 0.05,
                     },
                     {
                         "min_cutoff": 0.7,
@@ -1362,7 +1391,6 @@ class MainWindow(QMainWindow):
                         {
                             "cutoff_hz": 20.0,
                             "order": 2,
-                            "delay_frames": 0,
                         },
                     ),
                     (
@@ -1378,11 +1406,10 @@ class MainWindow(QMainWindow):
                     (
                         "one_euro_z-cpp",
                         {
-                            "min_cutoff": 0.02,
-                            "beta": 6.0,
-                            "d_cutoff": 2.0,
-                            "derivative_deadband": 1.0,
-                            "delay_frames": 0,
+                            "min_cutoff": 1.0,
+                            "beta": 10.0,
+                            "d_cutoff": 8.0,
+                            "derivative_deadband": 0.02,
                         },
                     ),
                 ]

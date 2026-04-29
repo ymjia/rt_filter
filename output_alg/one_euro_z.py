@@ -22,10 +22,10 @@ class OneEuroZParameters:
     the cutoff, which keeps static depth noise from weakening the denoising.
     """
 
-    min_cutoff: float = 0.02
-    beta: float = 6.0
-    d_cutoff: float = 2.0
-    derivative_deadband: float = 1.0
+    min_cutoff: float = 1.0
+    beta: float = 10.0
+    d_cutoff: float = 8.0
+    derivative_deadband: float = 0.02
     sample_rate_hz: float = 100.0
     history_size: int = 0
     delay_frames: int = 0

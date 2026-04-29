@@ -82,10 +82,10 @@ Options DefaultOptions() {
     options.butterworth.strict_timestamps = false;
 
     // One Euro Z 当前推荐参数：偏向 SN 数据中 Z 方向静止降噪，同时保留速度自适应。
-    options.one_euro.min_cutoff = 0.02;
-    options.one_euro.beta = 6.0;
-    options.one_euro.d_cutoff = 2.0;
-    options.one_euro.derivative_deadband = 1.0;
+    options.one_euro.min_cutoff = 1.0;
+    options.one_euro.beta = 10.0;
+    options.one_euro.d_cutoff = 8.0;
+    options.one_euro.derivative_deadband = 0.02;
     options.one_euro.sample_rate_hz = 100.0;
     options.one_euro.history_size = 0;
     options.one_euro.delay_frames = 0;
@@ -298,7 +298,7 @@ void PrintUsage() {
         << "  --cutoff-hz 20.0 --order 2\n"
         << "  butterworth_z also supports --delay-frames 0\n"
         << "One Euro params:\n"
-        << "  --min-cutoff 0.02 --beta 6.0 --d-cutoff 2.0 --derivative-deadband 1.0 --delay-frames 0\n"
+        << "  --min-cutoff 1.0 --beta 10.0 --d-cutoff 8.0 --derivative-deadband 0.02 --delay-frames 0\n"
         << "UKF params:\n"
         << "  --motion-model constant_velocity --process-noise 1000 --measurement-noise 0.001\n"
         << "  --initial-linear-velocity vx,vy,vz --initial-angular-velocity wx,wy,wz\n";

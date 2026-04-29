@@ -17,20 +17,20 @@ namespace output_alg {
 struct OneEuroZParameters {
     // 静止或低速时的最小截止频率。值越小，静止抖动压制越强，但真实 Z 向运动
     // 会更容易产生滞后；值越大，输出越跟手，但静止时降噪变弱。
-    double min_cutoff = 0.02;
+    double min_cutoff = 1.0;
 
     // 根据 Z 方向速度动态提高截止频率的强度。值越大，检测到运动时越快放开
     // 低通，拖影越小；代价是运动过程中的噪声会保留更多。
-    double beta = 6.0;
+    double beta = 10.0;
 
     // 对 Z 方向速度估计做低通时使用的截止频率。它影响“当前是否在运动”的
     // 判断稳定性，通常不需要频繁调整。
-    double d_cutoff = 2.0;
+    double d_cutoff = 8.0;
 
     // Z 速度死区，单位与输入坐标单位/秒一致。低于该阈值的速度会被视作静止
     // 抖动，不触发 beta 自适应放开滤波。增大该值可增强静止降噪，但会增加慢速
     // Z 向运动的滞后风险。
-    double derivative_deadband = 1.0;
+    double derivative_deadband = 0.02;
 
     // 当 Update/FilterTrajectory 没有传入时间戳时，用该采样率计算 dt。
     // 如果传入了严格递增时间戳，则优先使用真实帧间隔。

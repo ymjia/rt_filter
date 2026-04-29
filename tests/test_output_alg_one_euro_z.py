@@ -22,6 +22,16 @@ def _poses(z_values: np.ndarray) -> np.ndarray:
     return poses
 
 
+def test_default_parameters_match_tuned_values():
+    params = OneEuroZParameters()
+
+    assert params.min_cutoff == 1.0
+    assert params.beta == 10.0
+    assert params.d_cutoff == 8.0
+    assert params.derivative_deadband == 0.02
+    assert params.sample_rate_hz == 100.0
+
+
 def test_realtime_filter_only_changes_z_translation():
     z = np.array([1.0, 1.2, 0.9, 1.1])
     poses = _poses(z)
