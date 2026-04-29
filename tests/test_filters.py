@@ -43,6 +43,35 @@ def _noisy_dynamic_z_wave(seed: int = 11) -> tuple[Trajectory, np.ndarray]:
     )
 
 
+def _noisy_dynamic_xyz_wave(seed: int = 13) -> tuple[Trajectory, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    sample_rate_hz = 100.0
+    count = 500
+    timestamps = np.arange(count, dtype=float) / sample_rate_hz
+    clean_positions = np.empty((count, 3), dtype=float)
+    clean_positions[:, 0] = 100.0 + 0.18 * np.sin(2.0 * np.pi * 10.5 * timestamps + 0.1)
+    clean_positions[:, 1] = 200.0 + 0.16 * np.sin(2.0 * np.pi * 12.0 * timestamps + 0.5)
+    clean_positions[:, 2] = (
+        300.0
+        + 0.45 * np.sin(2.0 * np.pi * 12.0 * timestamps)
+        + 0.12 * np.sin(2.0 * np.pi * 6.0 * timestamps + 0.4)
+    )
+    high_freq_noise = np.column_stack(
+        [
+            0.07 * np.sin(2.0 * np.pi * 34.0 * timestamps + 0.2),
+            0.06 * np.sin(2.0 * np.pi * 31.0 * timestamps + 0.6),
+            0.16 * np.sin(2.0 * np.pi * 34.0 * timestamps + 0.2),
+        ]
+    )
+    random_noise = rng.normal(scale=[0.015, 0.015, 0.035], size=(count, 3))
+    positions = clean_positions + high_freq_noise + random_noise
+    rotations = Rotation.from_rotvec(rng.normal(scale=np.deg2rad(0.02), size=(count, 3)))
+    return (
+        Trajectory(make_poses(positions, rotations), timestamps=timestamps, name="dynamic_xyz_wave"),
+        clean_positions,
+    )
+
+
 def test_moving_average_reduces_static_acceleration():
     traj = _noisy_static()
     filtered = run_filter("moving_average", traj, {"window": 9})
@@ -69,7 +98,9 @@ def test_all_filters_keep_shape():
                 "measurement_noise": 0.001,
             },
         ),
+        ("one_euro", {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0}),
         ("one_euro_z", {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0}),
+        ("butterworth", {"cutoff_hz": 20.0, "order": 2}),
         ("butterworth_z", {"cutoff_hz": 20.0, "order": 2}),
         (
             "adaptive_kalman_z",
@@ -92,8 +123,18 @@ def test_all_filters_keep_shape():
 
 def test_cpp_filters_are_listed():
     filters = available_filters()
+    assert "one_euro" in filters
+    assert "butterworth" in filters
     assert "one_euro_z-cpp" in filters
     assert "ukf-cpp" in filters
+
+
+def test_one_euro_reduces_xyz_noise_without_changing_rotation():
+    traj = _noisy_static()
+    filtered = run_filter("one_euro", traj, {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0})
+
+    np.testing.assert_allclose(filtered.rotations.as_matrix(), traj.rotations.as_matrix())
+    assert np.all(filtered.positions.std(axis=0, ddof=0) < traj.positions.std(axis=0, ddof=0))
 
 
 def test_one_euro_z_reduces_z_noise_without_changing_xy_or_rotation():
@@ -143,10 +184,37 @@ def test_butterworth_z_preserves_xy_and_main_dynamic_shape():
     assert filtered_corr > 0.97
 
 
+def test_butterworth_preserves_xyz_main_dynamic_shape():
+    traj, clean_positions = _noisy_dynamic_xyz_wave()
+
+    filtered = run_filter("butterworth", traj, {"cutoff_hz": 20.0, "order": 2})
+
+    np.testing.assert_allclose(filtered.rotations.as_matrix(), traj.rotations.as_matrix())
+
+    raw_rmse = float(np.sqrt(np.mean((traj.positions - clean_positions) ** 2)))
+    filtered_rmse = float(np.sqrt(np.mean((filtered.positions - clean_positions) ** 2)))
+    assert filtered_rmse < raw_rmse * 0.6
+
+    for axis in range(3):
+        clean_centered = clean_positions[:, axis] - np.mean(clean_positions[:, axis])
+        raw_centered = traj.positions[:, axis] - np.mean(traj.positions[:, axis])
+        filtered_centered = filtered.positions[:, axis] - np.mean(filtered.positions[:, axis])
+        raw_corr = float(np.corrcoef(clean_centered, raw_centered)[0, 1])
+        filtered_corr = float(np.corrcoef(clean_centered, filtered_centered)[0, 1])
+        assert filtered_corr > raw_corr
+        assert filtered_corr > 0.96
+
+
 def test_butterworth_z_rejects_cutoff_above_nyquist():
     traj = _noisy_static()
     with pytest.raises(ValueError, match="Nyquist"):
         run_filter("butterworth_z", traj, {"cutoff_hz": 60.0, "order": 2, "sample_rate_hz": 100.0})
+
+
+def test_butterworth_rejects_cutoff_above_nyquist():
+    traj = _noisy_static()
+    with pytest.raises(ValueError, match="Nyquist"):
+        run_filter("butterworth", traj, {"cutoff_hz": 60.0, "order": 2, "sample_rate_hz": 100.0})
 
 
 def test_adaptive_kalman_z_reduces_z_noise_without_changing_xy_or_rotation():

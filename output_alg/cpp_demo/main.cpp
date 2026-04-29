@@ -22,6 +22,7 @@
 
 #include <Eigen/Geometry>
 
+#include "butterworth.hpp"
 #include "one_euro_z.hpp"
 #include "ukf.hpp"
 
@@ -44,11 +45,18 @@ struct Options {
     std::string algorithm = "ukf";
     // 滤波参数统一放在 lambda / 单帧接口外部配置。实际工程中可把这些成员
     // 放到扫描界面类或轨迹处理类里，避免每帧重复构造参数对象。
+    output_alg::ButterworthParameters butterworth;
     output_alg::OneEuroZParameters one_euro;
     output_alg::UkfParameters ukf;
 };
 
 std::string DefaultOutputForAlgorithm(const std::string& algorithm) {
+    if (algorithm == "butterworth") {
+        return "outputs/cpp_demo/noisy_line_butterworth.csv";
+    }
+    if (algorithm == "butterworth_z") {
+        return "outputs/cpp_demo/noisy_line_butterworth_z.csv";
+    }
     if (algorithm == "one_euro_z") {
         return "outputs/cpp_demo/noisy_line_one_euro_z.csv";
     }
@@ -63,6 +71,14 @@ Options DefaultOptions() {
     options.input = "examples/demo_data/noisy_line.csv";
     options.algorithm = "ukf";
     options.output = DefaultOutputForAlgorithm(options.algorithm);
+
+    // Realtime Butterworth 当前推荐参数：面向 100 Hz 采样下的轻量实时低通。
+    // 这是因果 IIR，和 Python 侧离线 zero-phase Butterworth 并不等价。
+    options.butterworth.cutoff_hz = 20.0;
+    options.butterworth.order = 2;
+    options.butterworth.sample_rate_hz = 100.0;
+    options.butterworth.history_size = 0;
+    options.butterworth.strict_timestamps = false;
 
     // One Euro Z 当前推荐参数：偏向 SN 数据中 Z 方向静止降噪，同时保留速度自适应。
     options.one_euro.min_cutoff = 0.02;
@@ -258,11 +274,13 @@ std::array<double, 6> ParseVector6(const std::string& value, const std::string& 
 void PrintUsage() {
     std::cerr
         << "usage: rt_filter_cpp_demo --input in.csv --output out.csv "
-        << "--algorithm one_euro_z|ukf [params]\n\n"
+        << "--algorithm butterworth|butterworth_z|one_euro_z|ukf [params]\n\n"
         << "Defaults when no arguments are supplied:\n"
         << "  --input examples/demo_data/noisy_line.csv\n"
         << "  --algorithm ukf\n"
         << "  --output outputs/cpp_demo/noisy_line_ukf.csv\n\n"
+        << "Butterworth realtime params:\n"
+        << "  --cutoff-hz 20.0 --order 2\n"
         << "One Euro params:\n"
         << "  --min-cutoff 0.02 --beta 6.0 --d-cutoff 2.0 --derivative-deadband 1.0\n"
         << "UKF params:\n"
@@ -295,12 +313,20 @@ Options ParseOptions(int argc, char** argv) {
         } else if (key == "--sample-rate-hz") {
             // 两个实时滤波器都支持“无时间戳输入”。此时使用采样率推导 dt。
             const double value = ParseDouble(require_value(), key);
+            options.butterworth.sample_rate_hz = value;
             options.one_euro.sample_rate_hz = value;
             options.ukf.sample_rate_hz = value;
         } else if (key == "--strict-timestamps") {
             // 默认情况下，异常时间戳会退回到固定采样率；开启 strict 后会直接报错。
+            options.butterworth.strict_timestamps = true;
             options.one_euro.strict_timestamps = true;
             options.ukf.strict_timestamps = true;
+        } else if (key == "--cutoff-hz") {
+            // Realtime Butterworth：因果低通截止频率，越低越平滑，但真实局部波峰也会被更强压制。
+            options.butterworth.cutoff_hz = ParseDouble(require_value(), key);
+        } else if (key == "--order") {
+            // Realtime Butterworth：Butterworth 阶数；当前建议先从 2 阶开始。
+            options.butterworth.order = static_cast<int>(ParseDouble(require_value(), key));
         } else if (key == "--min-cutoff") {
             // One Euro Z：静止/低速时的最小截止频率，越小越稳但拖影越明显。
             options.one_euro.min_cutoff = ParseDouble(require_value(), key);
@@ -347,8 +373,13 @@ Options ParseOptions(int argc, char** argv) {
         }
     }
 
-    if (options.algorithm != "one_euro_z" && options.algorithm != "ukf") {
-        throw std::invalid_argument("--algorithm must be one_euro_z or ukf");
+    if (
+        options.algorithm != "butterworth" &&
+        options.algorithm != "butterworth_z" &&
+        options.algorithm != "one_euro_z" &&
+        options.algorithm != "ukf") {
+        throw std::invalid_argument(
+            "--algorithm must be butterworth, butterworth_z, one_euro_z, or ukf");
     }
     if (!output_provided) {
         options.output = DefaultOutputForAlgorithm(options.algorithm);
@@ -621,10 +652,20 @@ output_alg::TimedFilterTrajectoryResult RunRealtimeFrameFilterTimed(
     const Options& options,
     const CsvTrajectory& trajectory) {
     // 实时帧滤波入口：这里用 CSV 中的每一行模拟实时系统收到的一帧 RigidMatrix。
-    // 关键点是滤波器对象只创建一次，并在循环中跨帧复用。这样 One Euro 的上一帧
-    // 输出、UKF 的状态向量/协方差/参考姿态都会被保留下来。
+    // 关键点是滤波器对象只创建一次，并在循环中跨帧复用。这样 Butterworth 的 IIR
+    // 节状态、One Euro 的上一帧输出、UKF 的状态向量/协方差/参考姿态都会被保留下来。
     const std::vector<double>* timestamps =
         trajectory.has_timestamps ? &trajectory.timestamps : nullptr;
+
+    if (options.algorithm == "butterworth") {
+        output_alg::ButterworthRealtimeFilter filter(options.butterworth);
+        return filter.FilterTrajectoryTimed(trajectory.rigids, timestamps, true);
+    }
+
+    if (options.algorithm == "butterworth_z") {
+        output_alg::ButterworthZRealtimeFilter filter(options.butterworth);
+        return filter.FilterTrajectoryTimed(trajectory.rigids, timestamps, true);
+    }
 
     if (options.algorithm == "one_euro_z") {
         output_alg::OneEuroZRealtimeFilter filter(options.one_euro);

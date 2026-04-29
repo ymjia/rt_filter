@@ -35,7 +35,9 @@ CSV 可使用以下任一形式：
 rt-filter filter input.csv outputs/filtered.csv --algorithm moving_average --param window=9
 rt-filter filter input.csv outputs/filtered.csv --algorithm savgol --param window=11 --param polyorder=2
 rt-filter filter input.csv outputs/filtered.csv --algorithm exponential --param alpha=0.25
+rt-filter filter input.csv outputs/filtered.csv --algorithm butterworth --param cutoff_hz=30.0 --param order=2
 rt-filter filter input.csv outputs/filtered.csv --algorithm butterworth_z --param cutoff_hz=20.0 --param order=2
+rt-filter filter input.csv outputs/filtered.csv --algorithm one_euro --param min_cutoff=20.0 --param beta=0.0 --param d_cutoff=2.0 --param derivative_deadband=0.0
 rt-filter filter input.csv outputs/filtered.csv --algorithm one_euro_z --param min_cutoff=0.02 --param beta=6.0 --param d_cutoff=2.0 --param derivative_deadband=1.0
 ```
 
@@ -58,7 +60,9 @@ rt-filter catalog
 | `exponential` | `alpha` | 因果指数平滑，只使用当前和历史信息 | 在线实时滤波、不能使用未来帧的场景 | 会产生滞后；速度越高或 `alpha` 越小，位置滞后越明显 |
 | `kalman_cv` | `process_noise`, `measurement_noise`, `initial_covariance` | 常速度模型 Kalman 滤波；同时估计位置/旋转向量及其速度 | 静态或低速数据、近似匀速轨迹、需要较强抖动压制的稳定性测试 | 模型假设不适合剧烈加减速；参数过强会把真实运动当噪声 |
 | `ukf` | `motion_model`, `process_noise`, `measurement_noise`, `initial_covariance`, `initial_velocity`, `initial_linear_velocity`, `initial_angular_velocity`, `alpha`, `beta`, `kappa` | 无迹 Kalman 滤波；对平移和相对旋转向量使用匀速或匀加速状态预测 | 位姿变化连续、测量噪声较大、希望显式引入运动连续性约束的轨迹 | 当前仅使用位姿测量；若无关节/控制量，复杂机械臂运动学模型无法真正发挥 |
+| `butterworth` | `cutoff_hz`, `order`, `sample_rate_hz` | 离线零相位 Butterworth 低通；同时改 X/Y/Z，旋转保持原样 | 三轴平移都存在高频抖动，且希望离线保留 10~15 Hz 左右的主波形起伏 | 不是在线算法；`cutoff_hz` 过低会把三轴局部峰值一起压掉 |
 | `butterworth_z` | `cutoff_hz`, `order`, `sample_rate_hz` | 离线零相位 Butterworth 低通；只改 Z，保留 X/Y 和姿态 | 动态轨迹里 Z 含有正常周期波动、希望保住主波形并只削掉更高频噪声 | 不是在线算法；`cutoff_hz` 设得过低会把真实 Z 波形一起压平 |
+| `one_euro` | `min_cutoff`, `beta`, `d_cutoff`, `derivative_deadband`, `sample_rate_hz` | X/Y/Z 方向 One Euro 自适应低通；旋转保持原样 | 需要在线实时，且三轴平移都想做一致的轻量平滑 | 因果滤波会有滞后；`min_cutoff` 太低会压掉三轴局部峰值 |
 | `one_euro_z` | `min_cutoff`, `beta`, `d_cutoff`, `derivative_deadband`, `sample_rate_hz` | Z 方向 One Euro 自适应低通；只改 Z，保留 X/Y 和姿态 | Z 噪声明显大于 X/Y、需要在线实时且减少拖影的静止或慢速转向场景 | 只处理 Z 随机噪声；`min_cutoff` 太低或 `derivative_deadband` 太大仍会产生滞后 |
 | `adaptive_kalman_z` | `process_noise`, `measurement_noise`, `initial_covariance`, `motion_process_gain`, `velocity_deadband`, `innovation_scale`, `innovation_gate`, `max_measurement_scale`, `sample_rate_hz` | Z 方向自适应标量 Kalman；只改 Z，带创新门控与可选速度自适应 | 当前默认更偏静态场景；适合 Z 噪声明显更大、且希望比 One Euro 更强抑制慢漂和偶发尖峰的场景 | 静态默认参数在真实动态轨迹上可能过强；拿到真实动态数据后需要重新整定 |
 
@@ -139,6 +143,18 @@ params:
 ```
 
 工程判断：如果 `jerk_rms_ratio` 很低，但 `to_raw_translation_rmse` 和 `to_reference_translation_rmse` 明显变大，通常说明指数滤波引入了滞后。
+
+### `butterworth`
+
+`butterworth` 是 `butterworth_z` 的三轴版本：对平移的 `x/y/z` 同时做离线零相位低通，旋转保持原样。它适合三轴都有类似高频抖动、而你更关心“保住主波形和局部峰值节奏”的场景。
+
+参数含义与 `butterworth_z` 相同：
+
+- `cutoff_hz`：低通截止频率，应该高于目标主波形频率，但低于噪声主频
+- `order`：Butterworth 阶数；当前建议先从 `2` 开始
+- `sample_rate_hz`：无时间戳时的回退采样率；如果轨迹自带时间戳，当前实现会优先按时间戳估计有效采样率
+
+当前对 `input/sn/case25~30` 的静态轨迹测试里，如果目标是尽量保留约 `10~15 peaks/s` 的三轴局部波峰节奏，`cutoff_hz=30.0, order=2` 比 `20.0` 更稳。
 
 ### `butterworth_z`
 
@@ -222,6 +238,20 @@ params:
 ```
 
 工程判断：如果只有位姿序列，没有关节角、控制量或机器人运动学模型，UKF 只能表达“轨迹应连续、速度/加速度不应突变”这类通用物理先验。若要让 UKF 真正知道机械臂运动学，还需要同步输入关节角/关节速度、末端速度命令、机器人 DH/URDF 参数，以及这些量的噪声协方差。
+
+### `one_euro`
+
+`one_euro` 是 `one_euro_z` 的三轴版本：对平移 `x/y/z` 同时做 One Euro Filter，旋转保持原样。它适合在线实时链路，或者你希望三轴平移都遵循同一套因果平滑规则的场景。
+
+参数含义与 `one_euro_z` 相同：
+
+- `min_cutoff`：低速或静止时的最小截止频率。越小抖动压制越强，但越容易滞后。
+- `beta`：根据速度提高截止频率的强度。越大越跟手，拖影越小，但静止抑噪会变弱。
+- `d_cutoff`：速度估计的截止频率，默认 `2.0`。
+- `derivative_deadband`：速度自适应死区，单位约为 mm/s。
+- `sample_rate_hz`：无时间戳输入时使用的采样率，默认 `80.0`；有 `timestamp/time/t` 时会直接使用实际时间戳。
+
+当前对 `input/sn/case25~30` 的静态轨迹测试里，如果目标是尽量保留约 `10~15 peaks/s` 的三轴局部波峰节奏，`min_cutoff=25.0, beta=0.0, d_cutoff=2.0, derivative_deadband=0.0` 是这批数据里表现最好的配置。
 
 ### `one_euro_z`
 

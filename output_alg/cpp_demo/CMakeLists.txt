@@ -10,6 +10,9 @@ endif()
 find_package(Eigen3 REQUIRED)
 
 add_library(output_alg_filters
+    ../butterworth.cpp
+    ../butterworth.hpp
+    ../euler_zyx_interface.hpp
     ../filter_timing.hpp
     ../one_euro_z.cpp
     ../one_euro_z.hpp
@@ -31,6 +34,9 @@ source_group(
     TREE ${CMAKE_CURRENT_LIST_DIR}/..
     FILES
         ../filter_timing.hpp
+        ../butterworth.cpp
+        ../butterworth.hpp
+        ../euler_zyx_interface.hpp
         ../one_euro_z.cpp
         ../one_euro_z.hpp
         ../ukf.cpp

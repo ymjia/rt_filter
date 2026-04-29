@@ -122,6 +122,17 @@ def available_filters() -> dict[str, FilterInfo]:
                 "initial_angular_velocity": [0.0, 0.0, 0.0],
             },
         ),
+        "one_euro": FilterInfo(
+            name="one_euro",
+            description="Causal One Euro adaptive low-pass filtering on X/Y/Z translation.",
+            defaults={
+                "min_cutoff": 0.02,
+                "beta": 6.0,
+                "d_cutoff": 2.0,
+                "derivative_deadband": 1.0,
+                "sample_rate_hz": 80.0,
+            },
+        ),
         "one_euro_z": FilterInfo(
             name="one_euro_z",
             description="Causal One Euro adaptive low-pass filtering on Z translation only.",
@@ -131,6 +142,18 @@ def available_filters() -> dict[str, FilterInfo]:
                 "d_cutoff": 2.0,
                 "derivative_deadband": 1.0,
                 "sample_rate_hz": 80.0,
+            },
+        ),
+        "butterworth": FilterInfo(
+            name="butterworth",
+            description=(
+                "Offline zero-phase Butterworth low-pass filtering on X/Y/Z translation "
+                "to preserve the main waveform while suppressing higher-frequency noise."
+            ),
+            defaults={
+                "cutoff_hz": 20.0,
+                "order": 2,
+                "sample_rate_hz": 100.0,
             },
         ),
         "butterworth_z": FilterInfo(
@@ -194,7 +217,12 @@ def run_filter(
         "kalman_cv": kalman_cv_filter,
         "ukf": ukf_filter,
         "ukf_cv": ukf_filter,
+        "one_euro": one_euro_filter,
+        "one_euro_xyz": one_euro_filter,
+        "euro": one_euro_filter,
         "one_euro_z": one_euro_z_filter,
+        "butterworth": butterworth_filter,
+        "butterworth_xyz": butterworth_filter,
         "butterworth_z": butterworth_z_filter,
         "adaptive_kalman_z": adaptive_kalman_z_filter,
     }
@@ -221,7 +249,12 @@ def run_filter_timed(
         "kalman_cv": _run_kalman_cv_timed,
         "ukf": _run_ukf_timed,
         "ukf_cv": _run_ukf_timed,
+        "one_euro": _run_one_euro_timed,
+        "one_euro_xyz": _run_one_euro_timed,
+        "euro": _run_one_euro_timed,
         "one_euro_z": _run_one_euro_z_timed,
+        "butterworth": _run_butterworth_timed,
+        "butterworth_xyz": _run_butterworth_timed,
         "butterworth_z": _run_butterworth_z_timed,
         "adaptive_kalman_z": _run_adaptive_kalman_z_timed,
     }
@@ -922,7 +955,7 @@ def _ukf_filter_impl(
     return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
 
 
-def one_euro_z_filter(
+def one_euro_filter(
     traj: Trajectory,
     min_cutoff: float = 0.02,
     beta: float = 6.0,
@@ -930,8 +963,11 @@ def one_euro_z_filter(
     derivative_deadband: float = 1.0,
     sample_rate_hz: float = 80.0,
 ) -> Trajectory:
-    result, _, _ = _one_euro_z_filter_impl(
+    result, _, _ = _one_euro_translation_filter_impl(
         traj,
+        axis_indices=(0, 1, 2),
+        filter_name="one_euro",
+        name_suffix="one_euro",
         min_cutoff=min_cutoff,
         beta=beta,
         d_cutoff=d_cutoff,
@@ -942,7 +978,30 @@ def one_euro_z_filter(
     return result
 
 
-def _run_one_euro_z_timed(
+def one_euro_z_filter(
+    traj: Trajectory,
+    min_cutoff: float = 0.02,
+    beta: float = 6.0,
+    d_cutoff: float = 2.0,
+    derivative_deadband: float = 1.0,
+    sample_rate_hz: float = 80.0,
+) -> Trajectory:
+    result, _, _ = _one_euro_translation_filter_impl(
+        traj,
+        axis_indices=(2,),
+        filter_name="one_euro_z",
+        name_suffix="one_euro_z",
+        min_cutoff=min_cutoff,
+        beta=beta,
+        d_cutoff=d_cutoff,
+        derivative_deadband=derivative_deadband,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=False,
+    )
+    return result
+
+
+def _run_one_euro_timed(
     traj: Trajectory,
     min_cutoff: float = 0.02,
     beta: float = 6.0,
@@ -950,8 +1009,11 @@ def _run_one_euro_z_timed(
     derivative_deadband: float = 1.0,
     sample_rate_hz: float = 80.0,
 ) -> TimedFilterRun:
-    result, per_pose_time_ns, total_time_ns = _one_euro_z_filter_impl(
+    result, per_pose_time_ns, total_time_ns = _one_euro_translation_filter_impl(
         traj,
+        axis_indices=(0, 1, 2),
+        filter_name="one_euro",
+        name_suffix="one_euro",
         min_cutoff=min_cutoff,
         beta=beta,
         d_cutoff=d_cutoff,
@@ -963,9 +1025,36 @@ def _run_one_euro_z_timed(
     return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
 
 
-def _one_euro_z_filter_impl(
+def _run_one_euro_z_timed(
+    traj: Trajectory,
+    min_cutoff: float = 0.02,
+    beta: float = 6.0,
+    d_cutoff: float = 2.0,
+    derivative_deadband: float = 1.0,
+    sample_rate_hz: float = 80.0,
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _one_euro_translation_filter_impl(
+        traj,
+        axis_indices=(2,),
+        filter_name="one_euro_z",
+        name_suffix="one_euro_z",
+        min_cutoff=min_cutoff,
+        beta=beta,
+        d_cutoff=d_cutoff,
+        derivative_deadband=derivative_deadband,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _one_euro_translation_filter_impl(
     traj: Trajectory,
     *,
+    axis_indices: tuple[int, ...],
+    filter_name: str,
+    name_suffix: str,
     min_cutoff: float = 0.02,
     beta: float = 6.0,
     d_cutoff: float = 2.0,
@@ -973,12 +1062,7 @@ def _one_euro_z_filter_impl(
     sample_rate_hz: float = 80.0,
     collect_timing: bool,
 ) -> tuple[Trajectory, ArrayI | None, int]:
-    """Causal adaptive low-pass filter for the Z translation channel.
-
-    X/Y translation and orientation are intentionally preserved. This is useful
-    when depth noise is much larger than lateral noise, and motion lag must stay
-    low during slow turns or continuous motion.
-    """
+    """Causal adaptive low-pass filter for selected translation channels."""
 
     if (
         min_cutoff <= 0
@@ -994,32 +1078,40 @@ def _one_euro_z_filter_impl(
 
     total_start_ns = perf_counter_ns() if collect_timing else 0
     positions = traj.positions.copy()
-    z_result = _one_euro_filter_1d(
-        positions[:, 2],
-        timestamps=traj.timestamps,
-        min_cutoff=min_cutoff,
-        beta=beta,
-        d_cutoff=d_cutoff,
-        derivative_deadband=derivative_deadband,
-        sample_rate_hz=sample_rate_hz,
-        collect_timing=collect_timing,
-    )
-    if collect_timing:
-        filtered_z, per_pose_time_ns, _ = z_result
-    else:
-        filtered_z = z_result
-    positions[:, 2] = filtered_z
+    per_pose_time_ns: ArrayI | None = None
+    for axis in axis_indices:
+        axis_result = _one_euro_filter_1d(
+            positions[:, axis],
+            timestamps=traj.timestamps,
+            min_cutoff=min_cutoff,
+            beta=beta,
+            d_cutoff=d_cutoff,
+            derivative_deadband=derivative_deadband,
+            sample_rate_hz=sample_rate_hz,
+            collect_timing=collect_timing,
+        )
+        if collect_timing:
+            filtered_axis, axis_time_ns, _ = axis_result
+            per_pose_time_ns = (
+                axis_time_ns.copy()
+                if per_pose_time_ns is None
+                else per_pose_time_ns + axis_time_ns
+            )
+        else:
+            filtered_axis = axis_result
+        positions[:, axis] = filtered_axis
     result = traj.copy_with(
         poses=make_poses(positions, traj.rotations),
-        name=f"{traj.name}__one_euro_z",
+        name=f"{traj.name}__{name_suffix}",
         metadata={
-            "filter": "one_euro_z",
+            "filter": filter_name,
             "params": {
                 "min_cutoff": min_cutoff,
                 "beta": beta,
                 "d_cutoff": d_cutoff,
                 "derivative_deadband": derivative_deadband,
                 "sample_rate_hz": sample_rate_hz,
+                "filtered_axes": _translation_axis_labels(axis_indices),
             },
         },
     )
@@ -1058,14 +1150,17 @@ def adaptive_kalman_z_filter(
     return result
 
 
-def butterworth_z_filter(
+def butterworth_filter(
     traj: Trajectory,
     cutoff_hz: float = 20.0,
     order: int = 2,
     sample_rate_hz: float = 100.0,
 ) -> Trajectory:
-    result, _, _ = _butterworth_z_filter_impl(
+    result, _, _ = _butterworth_translation_filter_impl(
         traj,
+        axis_indices=(0, 1, 2),
+        filter_name="butterworth",
+        name_suffix="butterworth",
         cutoff_hz=cutoff_hz,
         order=order,
         sample_rate_hz=sample_rate_hz,
@@ -1074,14 +1169,36 @@ def butterworth_z_filter(
     return result
 
 
-def _run_butterworth_z_timed(
+def butterworth_z_filter(
+    traj: Trajectory,
+    cutoff_hz: float = 20.0,
+    order: int = 2,
+    sample_rate_hz: float = 100.0,
+) -> Trajectory:
+    result, _, _ = _butterworth_translation_filter_impl(
+        traj,
+        axis_indices=(2,),
+        filter_name="butterworth_z",
+        name_suffix="butterworth_z",
+        cutoff_hz=cutoff_hz,
+        order=order,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=False,
+    )
+    return result
+
+
+def _run_butterworth_timed(
     traj: Trajectory,
     cutoff_hz: float = 20.0,
     order: int = 2,
     sample_rate_hz: float = 100.0,
 ) -> TimedFilterRun:
-    result, per_pose_time_ns, total_time_ns = _butterworth_z_filter_impl(
+    result, per_pose_time_ns, total_time_ns = _butterworth_translation_filter_impl(
         traj,
+        axis_indices=(0, 1, 2),
+        filter_name="butterworth",
+        name_suffix="butterworth",
         cutoff_hz=cutoff_hz,
         order=order,
         sample_rate_hz=sample_rate_hz,
@@ -1091,20 +1208,38 @@ def _run_butterworth_z_timed(
     return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
 
 
-def _butterworth_z_filter_impl(
+def _run_butterworth_z_timed(
+    traj: Trajectory,
+    cutoff_hz: float = 20.0,
+    order: int = 2,
+    sample_rate_hz: float = 100.0,
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _butterworth_translation_filter_impl(
+        traj,
+        axis_indices=(2,),
+        filter_name="butterworth_z",
+        name_suffix="butterworth_z",
+        cutoff_hz=cutoff_hz,
+        order=order,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
+def _butterworth_translation_filter_impl(
     traj: Trajectory,
     *,
+    axis_indices: tuple[int, ...],
+    filter_name: str,
+    name_suffix: str,
     cutoff_hz: float = 20.0,
     order: int = 2,
     sample_rate_hz: float = 100.0,
     collect_timing: bool,
 ) -> tuple[Trajectory, ArrayI | None, int]:
-    """Offline zero-phase Butterworth low-pass filter for the Z translation channel only.
-
-    The filter preserves X/Y translation and orientation, and targets dynamic
-    trajectories where the main Z waveform should remain intact while
-    higher-frequency noise is attenuated.
-    """
+    """Offline zero-phase Butterworth low-pass filter for selected translation channels."""
 
     order = int(order)
     if cutoff_hz <= 0.0 or sample_rate_hz <= 0.0 or order < 1:
@@ -1117,23 +1252,24 @@ def _butterworth_z_filter_impl(
         positions.shape[0],
         sample_rate_hz,
     )
-    filtered_z = _zero_phase_butterworth_filter_1d(
-        positions[:, 2],
-        cutoff_hz=cutoff_hz,
-        order=order,
-        sample_rate_hz=effective_sample_rate_hz,
-    )
-    positions[:, 2] = filtered_z
+    for axis in axis_indices:
+        positions[:, axis] = _zero_phase_butterworth_filter_1d(
+            positions[:, axis],
+            cutoff_hz=cutoff_hz,
+            order=order,
+            sample_rate_hz=effective_sample_rate_hz,
+        )
     result = traj.copy_with(
         poses=make_poses(positions, traj.rotations),
-        name=f"{traj.name}__butterworth_z",
+        name=f"{traj.name}__{name_suffix}",
         metadata={
-            "filter": "butterworth_z",
+            "filter": filter_name,
             "params": {
                 "cutoff_hz": cutoff_hz,
                 "order": order,
                 "sample_rate_hz": sample_rate_hz,
                 "effective_sample_rate_hz": effective_sample_rate_hz,
+                "filtered_axes": _translation_axis_labels(axis_indices),
             },
         },
     )
@@ -1281,6 +1417,11 @@ def _validate_window(window: int, count: int, *, odd: bool) -> int:
     return window
 
 
+def _translation_axis_labels(axis_indices: tuple[int, ...]) -> list[str]:
+    labels = ("x", "y", "z")
+    return [labels[index] for index in axis_indices]
+
+
 def _one_euro_filter_1d(
     values: ArrayLike,
     *,
@@ -1414,7 +1555,7 @@ def _zero_phase_butterworth_filter_1d(
 ) -> ArrayF:
     measurements = np.asarray(values, dtype=float)
     if measurements.ndim != 1:
-        raise ValueError("Butterworth Z filter values must be one-dimensional")
+        raise ValueError("Butterworth filter values must be one-dimensional")
     count = measurements.shape[0]
     if count <= 2:
         return measurements.copy()
