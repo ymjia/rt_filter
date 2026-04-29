@@ -77,6 +77,22 @@ CPP_FILTER_SPECS: dict[str, dict[str, Any]] = {
             "sample_rate_hz": 100.0,
         },
     },
+    "butterworth_z_window5_cpp": {
+        "alias": "butterworth_z-window5-cpp",
+        "cpp_algorithm": "butterworth_z",
+        "result_suffix": "butterworth_z_window5_cpp",
+        "description": (
+            "Run the standalone C++ realtime Butterworth Z executable with a fixed "
+            "window of 5 frames (2 before and 2 after the center frame), then import "
+            "its trajectory and timing outputs for GUI analysis."
+        ),
+        "defaults": {
+            "cutoff_hz": 20.0,
+            "order": 2,
+            "sample_rate_hz": 100.0,
+            "delay_frames": 2,
+        },
+    },
     "one_euro_z_cpp": {
         "alias": "one_euro_z-cpp",
         "cpp_algorithm": "one_euro_z",
@@ -91,6 +107,24 @@ CPP_FILTER_SPECS: dict[str, dict[str, Any]] = {
             "d_cutoff": 8.0,
             "derivative_deadband": 0.02,
             "sample_rate_hz": 100.0,
+        },
+    },
+    "one_euro_z_window5_cpp": {
+        "alias": "one_euro_z-window5-cpp",
+        "cpp_algorithm": "one_euro_z",
+        "result_suffix": "one_euro_z_window5_cpp",
+        "description": (
+            "Run the standalone C++ One Euro Z executable with a fixed window of 5 "
+            "frames (2 before and 2 after the center frame), then import its "
+            "trajectory and timing outputs for GUI analysis."
+        ),
+        "defaults": {
+            "min_cutoff": 1.0,
+            "beta": 10.0,
+            "d_cutoff": 8.0,
+            "derivative_deadband": 0.02,
+            "sample_rate_hz": 100.0,
+            "delay_frames": 2,
         },
     },
     "ukf_cpp": {

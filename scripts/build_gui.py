@@ -37,8 +37,8 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) ->
 def _packaged_executable(distpath: Path) -> Path:
     if sys.platform == "darwin":
         candidates = [
-            distpath / APP_NAME,
             distpath / f"{APP_NAME}.app" / "Contents" / "MacOS" / APP_NAME,
+            distpath / APP_NAME,
         ]
     elif sys.platform.startswith("win"):
         candidates = [
@@ -51,7 +51,7 @@ def _packaged_executable(distpath: Path) -> Path:
             distpath / APP_NAME / APP_NAME,
         ]
     for candidate in candidates:
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
     return candidates[0]
 

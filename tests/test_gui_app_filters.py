@@ -168,10 +168,14 @@ def test_gui_cpp_status_and_presets_include_butterworth_cpp(monkeypatch: pytest.
 
     assert "butterworth-cpp" in preset_names
     assert "butterworth_z-cpp" in preset_names
+    assert "butterworth_z-window5-cpp" in preset_names
     assert "ukf-cpp" in preset_names
     assert "one_euro_z-cpp" in preset_names
+    assert "one_euro_z-window5-cpp" in preset_names
     assert "butterworth-cpp" in status_text
     assert "butterworth_z-cpp" in status_text
+    assert "butterworth_z-window5-cpp" in status_text
+    assert "one_euro_z-window5-cpp" in status_text
 
 
 def test_gui_one_euro_z_cpp_preset_uses_tuned_defaults(monkeypatch: pytest.MonkeyPatch):
@@ -194,6 +198,31 @@ def test_gui_one_euro_z_cpp_preset_uses_tuned_defaults(monkeypatch: pytest.Monke
             "derivative_deadband": 0.02,
         }
     ]
+
+
+def test_gui_window5_cpp_presets_use_delay_frames(monkeypatch: pytest.MonkeyPatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from rt_filter.gui.app import MainWindow
+
+    monkeypatch.setattr("rt_filter.gui.app.cpp_demo_available", lambda: True)
+
+    dummy = object()
+    presets = dict(MainWindow._default_filter_presets(dummy))
+
+    assert presets["butterworth_z-window5-cpp"] == {
+        "cutoff_hz": 20.0,
+        "order": 2,
+        "delay_frames": 2,
+    }
+    assert presets["one_euro_z-window5-cpp"] == {
+        "min_cutoff": 1.0,
+        "beta": 10.0,
+        "d_cutoff": 8.0,
+        "derivative_deadband": 0.02,
+        "delay_frames": 2,
+    }
 
 
 def test_gui_one_euro_z_presets_include_butterworth_like_candidates():

@@ -127,7 +127,9 @@ def test_cpp_filters_are_listed():
     assert "butterworth" in filters
     assert "butterworth-cpp" in filters
     assert "butterworth_z-cpp" in filters
+    assert "butterworth_z-window5-cpp" in filters
     assert "one_euro_z-cpp" in filters
+    assert "one_euro_z-window5-cpp" in filters
     assert "ukf-cpp" in filters
 
 
@@ -139,6 +141,28 @@ def test_one_euro_z_cpp_defaults_match_tuned_cpp_parameters():
         "d_cutoff": 8.0,
         "derivative_deadband": 0.02,
         "sample_rate_hz": 100.0,
+    }
+
+
+def test_one_euro_z_window5_cpp_defaults_match_tuned_cpp_parameters():
+    defaults = available_filters()["one_euro_z-window5-cpp"].defaults
+    assert defaults == {
+        "min_cutoff": 1.0,
+        "beta": 10.0,
+        "d_cutoff": 8.0,
+        "derivative_deadband": 0.02,
+        "sample_rate_hz": 100.0,
+        "delay_frames": 2,
+    }
+
+
+def test_butterworth_z_window5_cpp_defaults_match_tuned_cpp_parameters():
+    defaults = available_filters()["butterworth_z-window5-cpp"].defaults
+    assert defaults == {
+        "cutoff_hz": 20.0,
+        "order": 2,
+        "sample_rate_hz": 100.0,
+        "delay_frames": 2,
     }
 
 
@@ -397,8 +421,16 @@ def test_ukf_rejects_invalid_initial_velocity_shape():
             {"cutoff_hz": 20.0, "order": 2},
         ),
         (
+            "butterworth_z-window5-cpp",
+            {"cutoff_hz": 20.0, "order": 2, "delay_frames": 2},
+        ),
+        (
             "one_euro_z-cpp",
             {"min_cutoff": 0.02, "beta": 6.0, "d_cutoff": 2.0, "derivative_deadband": 1.0},
+        ),
+        (
+            "one_euro_z-window5-cpp",
+            {"min_cutoff": 0.02, "beta": 6.0, "d_cutoff": 2.0, "derivative_deadband": 1.0, "delay_frames": 2},
         ),
         (
             "ukf_cpp",

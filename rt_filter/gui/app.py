@@ -1394,6 +1394,14 @@ class MainWindow(QMainWindow):
                         },
                     ),
                     (
+                        "butterworth_z-window5-cpp",
+                        {
+                            "cutoff_hz": 20.0,
+                            "order": 2,
+                            "delay_frames": 2,
+                        },
+                    ),
+                    (
                         "ukf-cpp",
                         {
                             "motion_model": "constant_velocity",
@@ -1412,6 +1420,16 @@ class MainWindow(QMainWindow):
                             "derivative_deadband": 0.02,
                         },
                     ),
+                    (
+                        "one_euro_z-window5-cpp",
+                        {
+                            "min_cutoff": 1.0,
+                            "beta": 10.0,
+                            "d_cutoff": 8.0,
+                            "derivative_deadband": 0.02,
+                            "delay_frames": 2,
+                        },
+                    ),
                 ]
             )
         return presets
@@ -1420,13 +1438,15 @@ class MainWindow(QMainWindow):
         if cpp_demo_available():
             return (
                 "C++ filters are ready in this GUI session: "
-                "`butterworth-cpp`, `butterworth_z-cpp`, `ukf-cpp`, and "
-                "`one_euro_z-cpp` can be checked directly."
+                "`butterworth-cpp`, `butterworth_z-cpp`, `butterworth_z-window5-cpp`, "
+                "`ukf-cpp`, `one_euro_z-cpp`, and `one_euro_z-window5-cpp` can be "
+                "checked directly."
             )
         return (
             "C++ filters are not available yet. Build `rt_filter_cpp_demo` first, then "
-            "`butterworth-cpp`, `butterworth_z-cpp`, `ukf-cpp`, and `one_euro_z-cpp` "
-            "will appear in the presets and algorithm list."
+            "`butterworth-cpp`, `butterworth_z-cpp`, `butterworth_z-window5-cpp`, "
+            "`ukf-cpp`, `one_euro_z-cpp`, and `one_euro_z-window5-cpp` will appear "
+            "in the presets and algorithm list."
         )
 
     def _add_filter_row(self, algorithm: str, params: Any, *, enabled: bool) -> None:
