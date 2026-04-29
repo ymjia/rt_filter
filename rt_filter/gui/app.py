@@ -1303,6 +1303,18 @@ class MainWindow(QMainWindow):
                         "d_cutoff": 1.0,
                         "derivative_deadband": 0.0,
                     },
+                    {
+                        "min_cutoff": 1.0,
+                        "beta": 10.0,
+                        "d_cutoff": 8.0,
+                        "derivative_deadband": 0.02,
+                    },
+                    {
+                        "min_cutoff": 2.0,
+                        "beta": 10.0,
+                        "d_cutoff": 8.0,
+                        "derivative_deadband": 0.05,
+                    },
                 ],
             ),
             (

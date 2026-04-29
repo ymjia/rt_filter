@@ -48,3 +48,30 @@ def test_gui_cpp_status_and_presets_include_butterworth_cpp(monkeypatch: pytest.
     assert "one_euro_z-cpp" in preset_names
     assert "butterworth-cpp" in status_text
     assert "butterworth_z-cpp" in status_text
+
+
+def test_gui_one_euro_z_presets_include_butterworth_like_candidates():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from rt_filter.gui.app import MainWindow
+
+    dummy = object()
+    presets = MainWindow._default_filter_presets(dummy)
+    one_euro_presets = [params for name, params in presets if name == "one_euro_z"]
+
+    assert len(one_euro_presets) == 1
+    preset_list = one_euro_presets[0]
+    assert isinstance(preset_list, list)
+    assert {
+        "min_cutoff": 1.0,
+        "beta": 10.0,
+        "d_cutoff": 8.0,
+        "derivative_deadband": 0.02,
+    } in preset_list
+    assert {
+        "min_cutoff": 2.0,
+        "beta": 10.0,
+        "d_cutoff": 8.0,
+        "derivative_deadband": 0.05,
+    } in preset_list
