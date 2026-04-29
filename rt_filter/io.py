@@ -27,6 +27,33 @@ SN_TRACK_COLUMNS = ("x", "y", "z", "xr", "yr", "zr", "time", "rate")
 SUPPORTED_TRAJECTORY_SUFFIXES = (".csv", ".txt", ".json", ".npy", ".npz")
 
 
+def is_trajectory_file(path: str | Path, *, inspect_json: bool = True) -> bool:
+    file_path = Path(path)
+    suffix = file_path.suffix.lower()
+    if suffix not in SUPPORTED_TRAJECTORY_SUFFIXES or not file_path.is_file():
+        return False
+    if suffix != ".json" or not inspect_json:
+        return True
+
+    lowered_name = file_path.name.lower()
+    lowered_stem = file_path.stem.lower()
+    if lowered_name in {"manifest.json", "rt_filter_gui.json"}:
+        return False
+    if lowered_stem.endswith("_metadata") or lowered_stem.endswith("_config"):
+        return False
+
+    try:
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    return "poses" in payload or "samples" in payload
+
+
 def read_trajectory(path: str | Path, *, drop_invalid: bool = True) -> Trajectory:
     file_path = Path(path)
     suffix = file_path.suffix.lower()

@@ -20,7 +20,7 @@ from rt_filter.analysis import (
 from rt_filter.evaluation import trajectory_metrics
 from rt_filter.filters import available_filters, cpp_demo_available
 from rt_filter.gui.chart_data import complete_neighbor_slice, neighbor_mean_deviation
-from rt_filter.io import SUPPORTED_TRAJECTORY_SUFFIXES, read_trajectory
+from rt_filter.io import SUPPORTED_TRAJECTORY_SUFFIXES, is_trajectory_file, read_trajectory
 from rt_filter.paraview_export import write_paraview_comparison_script
 from rt_filter.trajectory import Trajectory
 
@@ -33,6 +33,8 @@ try:
         QAbstractItemView,
         QCheckBox,
         QComboBox,
+        QDialog,
+        QDialogButtonBox,
         QFileDialog,
         QFormLayout,
         QFrame,
@@ -43,6 +45,7 @@ try:
         QLineEdit,
         QMainWindow,
         QMessageBox,
+        QPlainTextEdit,
         QPushButton,
         QSizePolicy,
         QSplitter,
@@ -600,6 +603,57 @@ class MetricsTableWidget(QWidget):
             self._syncing_selection = False
 
 
+class JsonEditorDialog(QDialog):
+    def __init__(self, title: str, json_text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(760, 560)
+        self._accepted_json_text: str | None = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        self.editor = QPlainTextEdit()
+        self.editor.setPlainText(_pretty_json_text(json_text))
+        self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.editor.setStyleSheet("font-family: Menlo, Consolas, monospace; font-size: 12px;")
+        layout.addWidget(self.editor, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        format_button = buttons.addButton("Format JSON", QDialogButtonBox.ActionRole)
+        format_button.clicked.connect(self._format_json)
+        buttons.accepted.connect(self._accept_json)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def json_text(self) -> str:
+        return self._accepted_json_text or self.editor.toPlainText().strip()
+
+    def _format_json(self) -> None:
+        payload = self._parse_json()
+        if payload is None:
+            return
+        self.editor.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    def _accept_json(self) -> None:
+        payload = self._parse_json()
+        if payload is None:
+            return
+        self._accepted_json_text = json.dumps(payload, ensure_ascii=False)
+        self.accept()
+
+    def _parse_json(self) -> Any | None:
+        text = self.editor.toPlainText().strip()
+        if not text:
+            text = "{}"
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            QMessageBox.warning(self, "Invalid JSON", f"Could not parse JSON:\n{exc}")
+            return None
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -720,6 +774,8 @@ class MainWindow(QMainWindow):
         self.filter_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.filter_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.filter_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.filter_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.filter_table.cellClicked.connect(self._edit_filter_params_from_cell)
         layout.addWidget(self.filter_table, 1)
 
         button_row = QHBoxLayout()
@@ -863,7 +919,7 @@ class MainWindow(QMainWindow):
         paths: list[Path] = []
         for pattern in GUI_DEFAULT_PATTERN_TUPLE:
             paths.extend(Path(directory).rglob(pattern))
-        paths = [path for path in sorted(paths) if path.name.lower() != "manifest.csv"]
+        paths = [path for path in sorted(paths) if is_trajectory_file(path)]
         self._append_inputs(paths)
 
     def clear_inputs(self) -> None:
@@ -1138,6 +1194,8 @@ class MainWindow(QMainWindow):
         for path in paths:
             if path in self.input_paths:
                 continue
+            if not is_trajectory_file(path):
+                continue
             try:
                 traj = read_trajectory(path)
                 metrics = trajectory_metrics(traj)
@@ -1339,7 +1397,7 @@ class MainWindow(QMainWindow):
         combo.addItems(list(available_filters().keys()))
         combo.setCurrentText(algorithm)
         self.filter_table.setCellWidget(row, 1, combo)
-        self.filter_table.setItem(row, 2, QTableWidgetItem(json.dumps(params, ensure_ascii=False)))
+        self.filter_table.setItem(row, 2, _build_filter_params_item(params))
         combo.currentTextChanged.connect(
             lambda text, source=combo: self._set_filter_default_params(source, text)
         )
@@ -1366,12 +1424,18 @@ class MainWindow(QMainWindow):
             return
         for row in range(self.filter_table.rowCount()):
             if self.filter_table.cellWidget(row, 1) is combo:
-                self.filter_table.setItem(
-                    row,
-                    2,
-                    QTableWidgetItem(json.dumps(info.defaults, ensure_ascii=False)),
-                )
+                self.filter_table.setItem(row, 2, _build_filter_params_item(info.defaults))
                 return
+
+    def _edit_filter_params_from_cell(self, row: int, column: int) -> None:
+        if column != 2:
+            return
+        item = self.filter_table.item(row, column)
+        current_text = "{}" if item is None else item.text()
+        dialog = JsonEditorDialog("Edit Filter Params JSON", current_text, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.filter_table.setItem(row, column, _build_filter_params_item(dialog.json_text()))
 
     def _update_detail_text(self) -> None:
         lines: list[str] = []
@@ -1466,6 +1530,27 @@ def _make_table_item(value: Any) -> QTableWidgetItem:
     if isinstance(value, str) and value:
         item.setToolTip(value)
     return item
+
+
+def _build_filter_params_item(params: Any) -> QTableWidgetItem:
+    if isinstance(params, str):
+        raw_text = params.strip() or "{}"
+    else:
+        raw_text = json.dumps(params, ensure_ascii=False)
+    item = QTableWidgetItem(raw_text)
+    item.setToolTip("Click to edit JSON parameters.\n\n" + _pretty_json_text(raw_text))
+    return item
+
+
+def _pretty_json_text(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return "{}"
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _format_cell(value: Any) -> str:
