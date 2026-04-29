@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 
+import numpy as np
 import pytest
 
 
@@ -24,6 +25,100 @@ def test_gui_algorithm_change_resets_params_to_filter_defaults():
 
         params = json.loads(window.filter_table.item(0, 2).text())
         assert params == {"process_noise": 1e-4, "measurement_noise": 1e-2}
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_curve_visibility_toggle_preserves_current_zoom():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from scipy.spatial.transform import Rotation
+
+    from rt_filter.analysis import FilterAnalysisResult, FilterSpec
+    from rt_filter.gui.app import MainWindow
+    from rt_filter.se3 import make_poses
+    from rt_filter.trajectory import Trajectory
+
+    count = 80
+    timestamps = np.arange(count, dtype=float) / 100.0
+    raw_positions = np.column_stack(
+        [
+            100.0 + 0.02 * np.sin(2.0 * np.pi * 1.1 * timestamps),
+            200.0 + 0.02 * np.cos(2.0 * np.pi * 0.9 * timestamps),
+            300.0 + 0.05 * np.sin(2.0 * np.pi * 1.5 * timestamps),
+        ]
+    )
+    filtered_positions = raw_positions.copy()
+    filtered_positions[:, 2] = 300.0 + 0.03 * np.sin(2.0 * np.pi * 1.5 * timestamps + 0.2)
+    rotations = Rotation.from_rotvec(np.zeros((count, 3)))
+    raw = Trajectory(make_poses(raw_positions, rotations), timestamps=timestamps, name="raw")
+    filtered = Trajectory(make_poses(filtered_positions, rotations), timestamps=timestamps, name="filtered")
+    result = FilterAnalysisResult(
+        FilterSpec("moving_average", {"window": 5}),
+        filtered,
+        np.zeros(count, dtype=np.int64),
+        {
+            "range_x": 0.04,
+            "range_y": 0.04,
+            "range_z": 0.1,
+            "filtered_range_x": 0.04,
+            "filtered_range_y": 0.04,
+            "filtered_range_z": 0.06,
+            "to_raw_translation_rmse": 0.01,
+            "to_raw_translation_max": 0.02,
+            "jerk_rms_ratio": 0.8,
+            "acceleration_rms_ratio": 0.85,
+            "compute_mean_us": 1.0,
+            "compute_p95_us": 1.2,
+            "compute_max_us": 1.5,
+        },
+        {
+            "x_jerk_rms_ratio": 1.0,
+            "y_jerk_rms_ratio": 1.0,
+            "z_jerk_rms_ratio": 0.8,
+            "to_raw_x_rmse": 0.0,
+            "to_raw_y_rmse": 0.0,
+            "to_raw_z_rmse": 0.01,
+        },
+    )
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window.raw = raw
+        window.results = [result]
+        window.update_results()
+
+        axes = [ax for ax in window.canvas.figure.axes if ax.axison]
+        assert len(axes) == 3
+
+        expected_limits: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        for ax in axes:
+            x0, x1 = ax.get_xlim()
+            y0, y1 = ax.get_ylim()
+            x_center = (x0 + x1) / 2.0
+            y_center = (y0 + y1) / 2.0
+            x_half = (x1 - x0) / 6.0
+            y_half = (y1 - y0) / 6.0
+            new_x = (x_center - x_half, x_center + x_half)
+            new_y = (y_center - y_half, y_center + y_half)
+            ax.set_xlim(new_x)
+            ax.set_ylim(new_y)
+            expected_limits.append((new_x, new_y))
+        window.canvas.draw_idle()
+        app.processEvents()
+
+        window._set_curve_visible(result.label, False)
+        app.processEvents()
+
+        actual_limits = window.canvas.capture_view_limits()
+        assert len(actual_limits) == len(expected_limits)
+        for actual, expected in zip(actual_limits, expected_limits, strict=True):
+            np.testing.assert_allclose(actual[0], expected[0])
+            np.testing.assert_allclose(actual[1], expected[1])
     finally:
         window.close()
         app.processEvents()
