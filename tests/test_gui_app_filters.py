@@ -124,6 +124,71 @@ def test_curve_visibility_toggle_preserves_current_zoom():
         app.processEvents()
 
 
+def test_expected_path_deviation_chart_renders():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from scipy.spatial.transform import Rotation
+
+    from rt_filter.analysis import FilterAnalysisResult, FilterSpec
+    from rt_filter.gui.app import MainWindow
+    from rt_filter.se3 import make_poses
+    from rt_filter.trajectory import Trajectory
+
+    start_static = np.zeros((6, 3), dtype=float)
+    moving_x = np.linspace(0.0, 10.0, 31)
+    moving = np.column_stack([moving_x, np.zeros_like(moving_x), np.zeros_like(moving_x)])
+    end_static = np.tile(np.array([10.0, 0.0, 0.0]), (6, 1))
+    raw_positions = np.vstack([start_static, moving, end_static])
+    filtered_positions = raw_positions.copy()
+    filtered_positions[8:35, 0] -= 0.5
+    count = raw_positions.shape[0]
+    rotations = Rotation.from_rotvec(np.zeros((count, 3)))
+    raw = Trajectory(make_poses(raw_positions, rotations), name="raw")
+    filtered = Trajectory(make_poses(filtered_positions, rotations), name="filtered")
+    result = FilterAnalysisResult(
+        FilterSpec("one_euro_z", {"delay_frames": 3}),
+        filtered,
+        np.zeros(count, dtype=np.int64),
+        {
+            "filtered_path_length": 10.0,
+            "to_raw_translation_rmse": 0.1,
+            "to_raw_translation_max": 0.5,
+            "jerk_rms_ratio": 0.8,
+            "acceleration_rms_ratio": 0.9,
+            "compute_mean_us": 1.0,
+            "compute_p95_us": 1.2,
+            "compute_max_us": 1.5,
+        },
+        {
+            "x_jerk_rms_ratio": 0.8,
+            "y_jerk_rms_ratio": 1.0,
+            "z_jerk_rms_ratio": 1.0,
+            "to_raw_x_rmse": 0.1,
+            "to_raw_y_rmse": 0.0,
+            "to_raw_z_rmse": 0.0,
+        },
+    )
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window.raw = raw
+        window.results = [result]
+        window.chart_combo.setCurrentText("Expected Path Deviation")
+        window.update_results()
+
+        axes = [ax for ax in window.canvas.figure.axes if ax.axison]
+        assert len(axes) == 3
+        assert "Expected path deviation" in axes[0].get_title()
+        labels = window._current_curve_labels()
+        assert labels == ["raw", result.label]
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_gui_one_euro_z_algorithm_change_uses_tuned_defaults():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")

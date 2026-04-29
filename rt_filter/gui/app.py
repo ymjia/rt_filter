@@ -19,7 +19,12 @@ from rt_filter.analysis import (
 )
 from rt_filter.evaluation import trajectory_metrics
 from rt_filter.filters import available_filters, cpp_demo_available
-from rt_filter.gui.chart_data import complete_neighbor_slice, neighbor_mean_deviation
+from rt_filter.gui.chart_data import (
+    complete_neighbor_slice,
+    fit_expected_path,
+    neighbor_mean_deviation,
+    path_deviation,
+)
 from rt_filter.io import SUPPORTED_TRAJECTORY_SUFFIXES, is_trajectory_file, read_trajectory
 from rt_filter.paraview_export import write_paraview_comparison_script
 from rt_filter.trajectory import Trajectory
@@ -401,6 +406,78 @@ class PlotCanvas(FigureCanvas):
         ax.grid(True, alpha=0.25)
         _legend_if_needed(ax, fontsize=7, loc="upper right")
         self._apply_single_axis_layout()
+        self._remember_home_limits()
+        self.draw()
+
+    def plot_expected_path_deviation(
+        self,
+        raw: Trajectory,
+        results: list[FilterAnalysisResult],
+        visible_labels: set[str] | None = None,
+    ) -> None:
+        self.figure.clear()
+        try:
+            model = fit_expected_path(raw.positions)
+        except ValueError as exc:
+            self.plot_empty(str(exc))
+            return
+
+        raw_axis = _sample_axis(raw)
+        series = [("raw", raw)] + [(result.label, result.trajectory) for result in results]
+        colors = [
+            "#1F1F1F",
+            "#4C78A8",
+            "#F58518",
+            "#54A24B",
+            "#B279A2",
+            "#E45756",
+            "#72B7B2",
+            "#FF9DA6",
+            "#9D755D",
+            "#BAB0AC",
+        ]
+        components = [
+            ("along", "along"),
+            ("cross", "cross"),
+            ("norm", "norm"),
+        ]
+
+        axes = self._stacked_axes(3)
+        for component_index, (component, ylabel) in enumerate(components):
+            ax = axes[component_index]
+            x_values: list[np.ndarray] = []
+            y_values: list[np.ndarray] = []
+            for series_index, (label, trajectory) in enumerate(series):
+                if not _is_visible(label, visible_labels):
+                    continue
+                count = min(raw_axis.shape[0], raw.count, trajectory.count, model.expected.shape[0])
+                if count == 0:
+                    continue
+                deviation = path_deviation(trajectory.positions[:count], model)
+                x = raw_axis[: deviation.norm.shape[0]]
+                y = getattr(deviation, component)
+                ax.plot(
+                    x,
+                    y,
+                    label=label,
+                    linewidth=1.15 if label == "raw" else 0.95,
+                    color=colors[series_index % len(colors)],
+                    alpha=0.95 if label == "raw" else 0.82,
+                )
+                x_values.append(x)
+                y_values.append(y)
+            if x_values:
+                ax.axhline(0.0, color="0.45", linewidth=0.8)
+                _set_data_limits(ax, x_values, y_values)
+            else:
+                _annotate_no_visible_data(ax)
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.25)
+            if component_index == 0:
+                ax.set_title(f"Expected path deviation ({model.kind})")
+                _legend_if_needed(ax, fontsize=7, loc="upper right")
+        axes[-1].set_xlabel("timestamp / sample")
+        self._apply_time_series_layout()
         self._remember_home_limits()
         self.draw()
 
@@ -873,6 +950,7 @@ class MainWindow(QMainWindow):
                 "Position XYZ",
                 "Filtered - Raw XYZ",
                 "XYZ Neighbor Mean Deviation",
+                "Expected Path Deviation",
                 "Metric Bars",
                 "Dimension Jerk Ratios",
                 "Per-frame Compute Time",
@@ -1117,6 +1195,8 @@ class MainWindow(QMainWindow):
             canvas.plot_delta(self.raw, self.results, visible_labels)
         elif mode == "XYZ Neighbor Mean Deviation":
             canvas.plot_neighbor_mean_deviation(self.raw, self.results, visible_labels)
+        elif mode == "Expected Path Deviation":
+            canvas.plot_expected_path_deviation(self.raw, self.results, visible_labels)
         elif mode == "Metric Bars":
             canvas.plot_metric_bars(self.results, visible_labels)
         elif mode == "Dimension Jerk Ratios":
@@ -1157,6 +1237,8 @@ class MainWindow(QMainWindow):
             for base_label in ["raw"] + [result.label for result in self.results]:
                 labels.extend([f"{base_label} w10", f"{base_label} w20"])
             return labels
+        if mode == "Expected Path Deviation":
+            return ["raw"] + [result.label for result in self.results]
         if mode == "Metric Bars":
             return [result.label for result in self.results]
         if mode == "Dimension Jerk Ratios":
