@@ -266,6 +266,13 @@ Sn3DAlgorithm::RigidMatrix ButterworthRealtimeFilter::Update(
     return filtered;
 }
 
+Eigen::Vector3d ButterworthRealtimeFilter::Update(
+    const Eigen::Vector3d& point,
+    OptionalDouble timestamp) {
+    Sn3DAlgorithm::RigidMatrix rigid(Eigen::Matrix3d::Identity(), point);
+    return Update(rigid, timestamp).get_translation();
+}
+
 TimedRigidResult ButterworthRealtimeFilter::UpdateTimed(
     const Sn3DAlgorithm::RigidMatrix& rigid,
     OptionalDouble timestamp) {
@@ -468,6 +475,13 @@ Sn3DAlgorithm::RigidMatrix ButterworthZRealtimeFilter::Update(
     filtered.get_translation().z() = last_output_z_;
     PushHistory(filtered);
     return filtered;
+}
+
+Eigen::Vector3d ButterworthZRealtimeFilter::Update(
+    const Eigen::Vector3d& point,
+    OptionalDouble timestamp) {
+    Sn3DAlgorithm::RigidMatrix rigid(Eigen::Matrix3d::Identity(), point);
+    return Update(rigid, timestamp).get_translation();
 }
 
 TimedRigidResult ButterworthZRealtimeFilter::UpdateTimed(
