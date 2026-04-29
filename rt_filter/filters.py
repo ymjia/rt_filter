@@ -49,6 +49,34 @@ class TimedFilterRun:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CPP_DEMO_ENV_VAR = "RT_FILTER_CPP_DEMO_EXE"
 CPP_FILTER_SPECS: dict[str, dict[str, Any]] = {
+    "butterworth_cpp": {
+        "alias": "butterworth-cpp",
+        "cpp_algorithm": "butterworth",
+        "result_suffix": "butterworth_cpp",
+        "description": (
+            "Run the standalone C++ realtime Butterworth XYZ executable and import "
+            "its trajectory and timing outputs for GUI analysis."
+        ),
+        "defaults": {
+            "cutoff_hz": 20.0,
+            "order": 2,
+            "sample_rate_hz": 100.0,
+        },
+    },
+    "butterworth_z_cpp": {
+        "alias": "butterworth_z-cpp",
+        "cpp_algorithm": "butterworth_z",
+        "result_suffix": "butterworth_z_cpp",
+        "description": (
+            "Run the standalone C++ realtime Butterworth Z executable and import "
+            "its trajectory and timing outputs for GUI analysis."
+        ),
+        "defaults": {
+            "cutoff_hz": 20.0,
+            "order": 2,
+            "sample_rate_hz": 100.0,
+        },
+    },
     "one_euro_z_cpp": {
         "alias": "one_euro_z-cpp",
         "cpp_algorithm": "one_euro_z",
@@ -413,6 +441,17 @@ def _cpp_filter_cli_args(cpp_algorithm: str, params: dict[str, Any]) -> list[str
         command.extend(["--sample-rate-hz", _format_cli_scalar(params["sample_rate_hz"])])
     if bool(params.get("strict_timestamps", False)):
         command.append("--strict-timestamps")
+
+    if cpp_algorithm in {"butterworth", "butterworth_z"}:
+        command.extend(
+            [
+                "--cutoff-hz",
+                _format_cli_scalar(params.get("cutoff_hz", 20.0)),
+                "--order",
+                _format_cli_scalar(int(params.get("order", 2))),
+            ]
+        )
+        return command
 
     if cpp_algorithm == "one_euro_z":
         command.extend(

@@ -125,6 +125,8 @@ def test_cpp_filters_are_listed():
     filters = available_filters()
     assert "one_euro" in filters
     assert "butterworth" in filters
+    assert "butterworth-cpp" in filters
+    assert "butterworth_z-cpp" in filters
     assert "one_euro_z-cpp" in filters
     assert "ukf-cpp" in filters
 
@@ -313,6 +315,14 @@ def test_ukf_rejects_invalid_initial_velocity_shape():
 @pytest.mark.parametrize(
     ("name", "params"),
     [
+        (
+            "butterworth-cpp",
+            {"cutoff_hz": 20.0, "order": 2},
+        ),
+        (
+            "butterworth_z-cpp",
+            {"cutoff_hz": 20.0, "order": 2},
+        ),
         (
             "one_euro_z-cpp",
             {"min_cutoff": 0.02, "beta": 6.0, "d_cutoff": 2.0, "derivative_deadband": 1.0},

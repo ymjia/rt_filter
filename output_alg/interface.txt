@@ -63,8 +63,45 @@ pos[1] = newY;
 pos[2] = newZ;
 };
 
+// Realtime Butterworth Z interface. Euler order is zyx: eulerZyx = [z, y, x], radians.
+// Include euler_zyx_interface.hpp, and put parameters plus m_groupedButterworthZFilters
+// on the external class.
+output_alg::ButterworthZParameters butterworthZParams;
+butterworthZParams.cutoff_hz = 20.0;
+butterworthZParams.order = 2;
+butterworthZParams.sample_rate_hz = 100.0;
+std::unordered_map<int, output_alg::ButterworthZRealtimeFilter> m_groupedButterworthZFilters;
+
+auto calcButterworthZEulerZyx = [&](int& groupId, Eigen::Vector3d& pos, Eigen::Vector3d& eulerZyx) -> bool {
+auto iter = m_groupedButterworthZFilters.find(groupId);
+if (iter == m_groupedButterworthZFilters.end())
+{
+iter = m_groupedButterworthZFilters.emplace(groupId, output_alg::ButterworthZRealtimeFilter(butterworthZParams)).first;
+}
+return output_alg::FilterButterworthZEulerZyx(iter->second, pos, eulerZyx);
+};
+
+// Realtime Butterworth XYZ interface. Euler order is zyx: eulerZyx = [z, y, x], radians.
+// Include euler_zyx_interface.hpp, and put parameters plus m_groupedButterworthFilters
+// on the external class.
+output_alg::ButterworthParameters butterworthParams;
+butterworthParams.cutoff_hz = 20.0;
+butterworthParams.order = 2;
+butterworthParams.sample_rate_hz = 100.0;
+std::unordered_map<int, output_alg::ButterworthRealtimeFilter> m_groupedButterworthFilters;
+
+auto calcButterworthEulerZyx = [&](int& groupId, Eigen::Vector3d& pos, Eigen::Vector3d& eulerZyx) -> bool {
+auto iter = m_groupedButterworthFilters.find(groupId);
+if (iter == m_groupedButterworthFilters.end())
+{
+iter = m_groupedButterworthFilters.emplace(groupId, output_alg::ButterworthRealtimeFilter(butterworthParams)).first;
+}
+return output_alg::FilterButterworthEulerZyx(iter->second, pos, eulerZyx);
+};
+
 // One Euro Z interface. Euler order is zyx: eulerZyx = [z, y, x], radians.
-// Put parameters and m_groupedOneEuroZFilters on the external class.
+// Include euler_zyx_interface.hpp, and put parameters plus m_groupedOneEuroZFilters
+// on the external class.
 output_alg::OneEuroZParameters oneEuroParams;
 oneEuroParams.min_cutoff = 0.02;
 oneEuroParams.beta = 6.0;
@@ -83,7 +120,8 @@ return output_alg::FilterOneEuroZEulerZyx(iter->second, pos, eulerZyx);
 };
 
 // UKF interface. Euler order is zyx: eulerZyx = [z, y, x], radians.
-// Put parameters and m_groupedUkfFilters on the external class.
+// Include euler_zyx_interface.hpp, and put parameters plus m_groupedUkfFilters
+// on the external class.
 output_alg::UkfParameters ukfParams;
 ukfParams.motion_model = "constant_velocity";
 ukfParams.process_noise = 1000.0;

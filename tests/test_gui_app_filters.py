@@ -27,3 +27,24 @@ def test_gui_algorithm_change_resets_params_to_filter_defaults():
     finally:
         window.close()
         app.processEvents()
+
+
+def test_gui_cpp_status_and_presets_include_butterworth_cpp(monkeypatch: pytest.MonkeyPatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from rt_filter.gui.app import MainWindow
+
+    monkeypatch.setattr("rt_filter.gui.app.cpp_demo_available", lambda: True)
+
+    dummy = object()
+    presets = MainWindow._default_filter_presets(dummy)
+    preset_names = [name for name, _params in presets]
+    status_text = MainWindow._cpp_filter_status_text(dummy)
+
+    assert "butterworth-cpp" in preset_names
+    assert "butterworth_z-cpp" in preset_names
+    assert "ukf-cpp" in preset_names
+    assert "one_euro_z-cpp" in preset_names
+    assert "butterworth-cpp" in status_text
+    assert "butterworth_z-cpp" in status_text

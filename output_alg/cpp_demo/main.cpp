@@ -242,6 +242,19 @@ double ParseDouble(const std::string& value, const std::string& name) {
     }
 }
 
+int ParseInt(const std::string& value, const std::string& name) {
+    try {
+        std::size_t consumed = 0;
+        const long parsed = std::stol(value, &consumed, 10);
+        if (consumed != value.size()) {
+            throw std::invalid_argument("trailing characters");
+        }
+        return static_cast<int>(parsed);
+    } catch (const std::exception&) {
+        throw std::invalid_argument("invalid integer value for " + name + ": " + value);
+    }
+}
+
 std::array<double, 3> ParseVector3(const std::string& value, const std::string& name) {
     std::string normalized = value;
     std::replace(normalized.begin(), normalized.end(), ';', ',');
@@ -311,7 +324,7 @@ Options ParseOptions(int argc, char** argv) {
         } else if (key == "--algorithm") {
             options.algorithm = Lower(require_value());
         } else if (key == "--sample-rate-hz") {
-            // 两个实时滤波器都支持“无时间戳输入”。此时使用采样率推导 dt。
+            // 三个实时滤波器都支持“无时间戳输入”。此时使用采样率推导 dt。
             const double value = ParseDouble(require_value(), key);
             options.butterworth.sample_rate_hz = value;
             options.one_euro.sample_rate_hz = value;
@@ -326,7 +339,7 @@ Options ParseOptions(int argc, char** argv) {
             options.butterworth.cutoff_hz = ParseDouble(require_value(), key);
         } else if (key == "--order") {
             // Realtime Butterworth：Butterworth 阶数；当前建议先从 2 阶开始。
-            options.butterworth.order = static_cast<int>(ParseDouble(require_value(), key));
+            options.butterworth.order = ParseInt(require_value(), key);
         } else if (key == "--min-cutoff") {
             // One Euro Z：静止/低速时的最小截止频率，越小越稳但拖影越明显。
             options.one_euro.min_cutoff = ParseDouble(require_value(), key);

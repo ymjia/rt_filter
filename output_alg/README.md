@@ -5,9 +5,15 @@ used for realtime scan-view pose display and trajectory denoising.
 
 Available filters:
 
+- `butterworth`: XYZ realtime causal Butterworth low-pass filtering.
+- `butterworth_z`: Z-only realtime causal Butterworth low-pass filtering.
 - `one_euro_z`: Z-only One Euro adaptive low-pass filtering.
 - `ukf`: 6D pose Unscented Kalman filtering with constant-velocity or
   constant-acceleration motion prediction.
+
+Note: the realtime C++ Butterworth filters are causal IIR filters. They are
+intended for scan-view display or frame-by-frame processing, and therefore are
+not identical to the Python-side offline zero-phase `sosfiltfilt` implementation.
 
 ## OneEuroZ Realtime Filter
 
@@ -93,6 +99,50 @@ Build a C++ object file:
 g++ -std=c++14 -Ioutput_alg -c output_alg/one_euro_z.cpp -o build/one_euro_z.o
 ```
 
+## Realtime Butterworth Filters
+
+`ButterworthRealtimeFilter` filters `x/y/z` translation together, while
+`ButterworthZRealtimeFilter` only changes `translation.z()`. Both preserve the
+input rotation matrix and keep internal causal IIR state across frames.
+
+Key parameters:
+
+| parameter | effect |
+| --- | --- |
+| `cutoff_hz` | Low-pass cutoff; lower values smooth more but remove more local peaks. |
+| `order` | Butterworth order; `2` is the recommended starting point. |
+| `sample_rate_hz` | Used when frame timestamps are not supplied. |
+| `history_size` | Number of filtered poses retained by the realtime object; `0` keeps all. |
+
+C++ usage:
+
+```cpp
+#include "butterworth.hpp"
+#include "RigidMatrix.h"
+
+output_alg::ButterworthParameters xyz_params;
+xyz_params.cutoff_hz = 30.0;
+xyz_params.order = 2;
+xyz_params.sample_rate_hz = 100.0;
+
+output_alg::ButterworthRealtimeFilter xyz_filter(xyz_params);
+Sn3DAlgorithm::RigidMatrix xyz_display = xyz_filter.Update(current_rigid, current_time_s);
+
+output_alg::ButterworthZParameters z_params;
+z_params.cutoff_hz = 20.0;
+z_params.order = 2;
+z_params.sample_rate_hz = 100.0;
+
+output_alg::ButterworthZRealtimeFilter z_filter(z_params);
+Sn3DAlgorithm::RigidMatrix z_display = z_filter.Update(current_rigid, current_time_s);
+```
+
+Build C++ object files:
+
+```powershell
+g++ -std=c++14 -Ioutput_alg -c output_alg/butterworth.cpp -o build/butterworth.o
+```
+
 ## UKF Realtime Filter
 
 The Python UKF accepts homogeneous 4x4 poses. The C++ UKF accepts
@@ -150,14 +200,14 @@ Sn3DAlgorithm::RigidMatrix display_pose = filter.Update(current_rigid, current_t
 ```
 
 For integration code that already stores position plus Euler angles, include
-`euler_zyx_interface.hpp` and call `FilterOneEuroZEulerZyx` or
-`FilterUkfEulerZyx`. The Euler vector is `[z, y, x]` in radians, with
-`R = Rz * Ry * Rx`; the helper mutates the input position and Euler vectors
-with the filtered result.
+`euler_zyx_interface.hpp` and call `FilterButterworthEulerZyx`,
+`FilterButterworthZEulerZyx`, `FilterOneEuroZEulerZyx`, or `FilterUkfEulerZyx`.
+The Euler vector is `[z, y, x]` in radians, with `R = Rz * Ry * Rx`; the
+helper mutates the input position and Euler vectors with the filtered result.
 
 ## C++ Demo
 
 `output_alg/cpp_demo` contains a CMake + Conan demo executable that reads a
-trajectory CSV, runs either `one_euro_z` or `ukf`, and writes a CSV that can be
-evaluated by the existing Python framework. See
+trajectory CSV, runs `butterworth`, `butterworth_z`, `one_euro_z`, or `ukf`,
+and writes a CSV that can be evaluated by the existing Python framework. See
 `output_alg/cpp_demo/README.md` for build and run commands.

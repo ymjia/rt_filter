@@ -1,8 +1,9 @@
 # C++ Filter Demo
 
-This demo builds the standalone C++ `one_euro_z` and `ukf` filters and runs
-them on a trajectory CSV. The output CSV uses the same columns as the Python
-framework (`timestamp,x,y,z,qw,qx,qy,qz,m00..m33`), so it can be read by
+This demo builds the standalone C++ `butterworth`, `butterworth_z`,
+`one_euro_z`, and `ukf` filters and runs them on a trajectory CSV. The output
+CSV uses the same columns as the Python framework
+(`timestamp,x,y,z,qw,qx,qy,qz,m00..m33`), so it can be read by
 `rt_filter.io.read_trajectory` and evaluated with the current tools.
 
 Besides the filtered trajectory CSV, the demo now also writes:
@@ -132,6 +133,28 @@ build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
   --beta 6.0 \
   --d-cutoff 2.0 \
   --derivative-deadband 1.0
+```
+
+`butterworth_z` example:
+
+```bash
+build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
+  --algorithm butterworth_z \
+  --input input/sn/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv \
+  --output outputs/cpp_demo/case11_butterworth_z.csv \
+  --cutoff-hz 20.0 \
+  --order 2
+```
+
+`butterworth` example:
+
+```bash
+build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
+  --algorithm butterworth \
+  --input input/sn/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv \
+  --output outputs/cpp_demo/case11_butterworth.csv \
+  --cutoff-hz 30.0 \
+  --order 2
 ```
 
 ## Evaluate Output
