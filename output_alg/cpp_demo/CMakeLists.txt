@@ -12,7 +12,6 @@ find_package(Eigen3 REQUIRED)
 add_library(output_alg_filters
     ../butterworth.cpp
     ../butterworth.hpp
-    ../euler_zyx_interface.hpp
     ../filter_timing.hpp
     ../one_euro_z.cpp
     ../one_euro_z.hpp
@@ -36,7 +35,6 @@ source_group(
         ../filter_timing.hpp
         ../butterworth.cpp
         ../butterworth.hpp
-        ../euler_zyx_interface.hpp
         ../one_euro_z.cpp
         ../one_euro_z.hpp
         ../ukf.cpp
@@ -46,6 +44,8 @@ source_group(
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT rt_filter_cpp_demo)
 
 if(MSVC)
+    set_property(TARGET output_alg_filters PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set_property(TARGET rt_filter_cpp_demo PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     target_compile_options(output_alg_filters PUBLIC /utf-8)
     target_compile_options(rt_filter_cpp_demo PRIVATE /utf-8)
 endif()

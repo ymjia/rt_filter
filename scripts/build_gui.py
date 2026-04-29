@@ -36,10 +36,24 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) ->
 
 def _packaged_executable(distpath: Path) -> Path:
     if sys.platform == "darwin":
-        return distpath / f"{APP_NAME}.app" / "Contents" / "MacOS" / APP_NAME
-    if sys.platform.startswith("win"):
-        return distpath / APP_NAME / f"{APP_NAME}.exe"
-    return distpath / APP_NAME / APP_NAME
+        candidates = [
+            distpath / APP_NAME,
+            distpath / f"{APP_NAME}.app" / "Contents" / "MacOS" / APP_NAME,
+        ]
+    elif sys.platform.startswith("win"):
+        candidates = [
+            distpath / f"{APP_NAME}.exe",
+            distpath / APP_NAME / f"{APP_NAME}.exe",
+        ]
+    else:
+        candidates = [
+            distpath / APP_NAME,
+            distpath / APP_NAME / APP_NAME,
+        ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def _packaged_config_path(distpath: Path, packaged_executable: Path) -> Path:
@@ -77,7 +91,9 @@ def main() -> int:
         raise FileNotFoundError(f"packaged executable was not created: {packaged}")
 
     config_target: Path | None = None
+    config_contents: bytes | None = None
     if CONFIG_FILE.exists():
+        config_contents = CONFIG_FILE.read_bytes()
         config_target = _packaged_config_path(distpath, packaged)
         config_target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CONFIG_FILE, config_target)
@@ -88,7 +104,11 @@ def main() -> int:
         smoke_env.setdefault("QT_QPA_PLATFORM", "offscreen")
         if config_target is not None:
             smoke_env["RT_FILTER_GUI_CONFIG"] = str(config_target)
-        _run([str(packaged), "--smoke-test"], cwd=ROOT, env=smoke_env)
+        try:
+            _run([str(packaged), "--smoke-test"], cwd=ROOT, env=smoke_env)
+        finally:
+            if config_target is not None and config_contents is not None:
+                config_target.write_bytes(config_contents)
 
     print(f"built: {packaged}")
     return 0

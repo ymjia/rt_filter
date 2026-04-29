@@ -75,6 +75,7 @@ CPP_FILTER_SPECS: dict[str, dict[str, Any]] = {
             "cutoff_hz": 20.0,
             "order": 2,
             "sample_rate_hz": 100.0,
+            "delay_frames": 0,
         },
     },
     "one_euro_z_cpp": {
@@ -91,6 +92,7 @@ CPP_FILTER_SPECS: dict[str, dict[str, Any]] = {
             "d_cutoff": 2.0,
             "derivative_deadband": 1.0,
             "sample_rate_hz": 80.0,
+            "delay_frames": 0,
         },
     },
     "ukf_cpp": {
@@ -441,6 +443,11 @@ def _cpp_filter_cli_args(cpp_algorithm: str, params: dict[str, Any]) -> list[str
         command.extend(["--sample-rate-hz", _format_cli_scalar(params["sample_rate_hz"])])
     if bool(params.get("strict_timestamps", False)):
         command.append("--strict-timestamps")
+    delay_frames = int(params.get("delay_frames", 0))
+    if delay_frames < 0:
+        raise ValueError("delay_frames must be >= 0")
+    if delay_frames > 0:
+        command.extend(["--delay-frames", _format_cli_scalar(delay_frames)])
 
     if cpp_algorithm in {"butterworth", "butterworth_z"}:
         command.extend(

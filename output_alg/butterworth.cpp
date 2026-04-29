@@ -123,6 +123,76 @@ bool NeedsRedesign(double current_sample_rate_hz, double next_sample_rate_hz) {
     return std::abs(current_sample_rate_hz - next_sample_rate_hz) > scale * 1e-6;
 }
 
+std::size_t DelayWindowSize(std::size_t delay_frames) {
+    return delay_frames * 2 + 1;
+}
+
+std::size_t DelayedTargetIndex(std::size_t count, std::size_t delay_frames) {
+    if (count == 0) {
+        return 0;
+    }
+    if (count > delay_frames) {
+        return count - 1 - delay_frames;
+    }
+    return 0;
+}
+
+double SampleRateFromDelayBuffer(
+    const std::deque<OptionalDouble>& timestamps,
+    double fallback_sample_rate_hz,
+    bool strict_timestamps) {
+    double dt_sum = 0.0;
+    std::size_t dt_count = 0;
+    for (std::size_t index = 1; index < timestamps.size(); ++index) {
+        const OptionalDouble& previous = timestamps[index - 1];
+        const OptionalDouble& current = timestamps[index];
+        if (!previous.has_value() || !current.has_value()) {
+            continue;
+        }
+        const double dt = *current - *previous;
+        if (dt > 0.0) {
+            dt_sum += dt;
+            ++dt_count;
+            continue;
+        }
+        if (strict_timestamps) {
+            throw std::invalid_argument("timestamps must be strictly increasing");
+        }
+    }
+    if (dt_count == 0 || dt_sum <= 0.0) {
+        return fallback_sample_rate_hz;
+    }
+    return static_cast<double>(dt_count) / dt_sum;
+}
+
+double ApplyForwardBackwardWindow(
+    const std::vector<double>& values,
+    std::size_t target_index,
+    const ButterworthParameters& params,
+    double sample_rate_hz) {
+    if (values.empty()) {
+        return 0.0;
+    }
+    if (values.size() == 1) {
+        return values[0];
+    }
+
+    std::vector<ButterworthSectionState> sections = DesignSections(params, sample_rate_hz);
+    InitializeSections(sections, values.front());
+    std::vector<double> forward(values.size(), 0.0);
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        forward[index] = ApplySections(sections, values[index]);
+    }
+
+    sections = DesignSections(params, sample_rate_hz);
+    InitializeSections(sections, forward.back());
+    std::vector<double> smoothed(values.size(), 0.0);
+    for (std::size_t reverse_index = values.size(); reverse_index-- > 0;) {
+        smoothed[reverse_index] = ApplySections(sections, forward[reverse_index]);
+    }
+    return smoothed[target_index];
+}
+
 }  // namespace
 
 ButterworthRealtimeFilter::ButterworthRealtimeFilter(ButterworthParameters params)
@@ -322,6 +392,8 @@ void ButterworthZRealtimeFilter::Reset() {
     last_output_z_ = 0.0;
     last_timestamp_.reset();
     sections_.clear();
+    raw_buffer_.clear();
+    timestamp_buffer_.clear();
     history_.clear();
 }
 
@@ -337,6 +409,11 @@ void ButterworthZRealtimeFilter::SetParameters(const ButterworthZParameters& par
             history_.pop_front();
         }
     }
+    const std::size_t max_delay_size = DelayWindowSize(params_.delay_frames);
+    while (raw_buffer_.size() > max_delay_size) {
+        raw_buffer_.pop_front();
+        timestamp_buffer_.pop_front();
+    }
     if (initialized_) {
         const double sample_rate_hz =
             current_sample_rate_hz_ > 0.0 ? current_sample_rate_hz_ : params_.sample_rate_hz;
@@ -347,6 +424,24 @@ void ButterworthZRealtimeFilter::SetParameters(const ButterworthZParameters& par
 Sn3DAlgorithm::RigidMatrix ButterworthZRealtimeFilter::Update(
     const Sn3DAlgorithm::RigidMatrix& rigid,
     OptionalDouble timestamp) {
+    if (params_.delay_frames > 0) {
+        if (timestamp.has_value() && last_timestamp_.has_value()) {
+            const double dt = *timestamp - *last_timestamp_;
+            if (dt <= 0.0 && params_.strict_timestamps) {
+                throw std::invalid_argument("timestamps must be strictly increasing");
+            }
+        }
+        initialized_ = true;
+        PushDelayBuffer(rigid, timestamp);
+        if (timestamp.has_value()) {
+            last_timestamp_ = timestamp;
+        }
+        Sn3DAlgorithm::RigidMatrix filtered = DelayedWindowOutput();
+        last_output_z_ = filtered.get_translation().z();
+        PushHistory(filtered);
+        return filtered;
+    }
+
     Sn3DAlgorithm::RigidMatrix filtered = rigid;
     const double raw_z = rigid.get_translation().z();
 
@@ -475,6 +570,39 @@ void ButterworthZRealtimeFilter::Redesign(double sample_rate_hz, double anchor_v
     sections_ = DesignSections(params_, sample_rate_hz);
     InitializeSections(sections_, anchor_value);
     current_sample_rate_hz_ = sample_rate_hz;
+}
+
+void ButterworthZRealtimeFilter::PushDelayBuffer(
+    const Sn3DAlgorithm::RigidMatrix& rigid,
+    OptionalDouble timestamp) {
+    raw_buffer_.push_back(rigid);
+    timestamp_buffer_.push_back(timestamp);
+    const std::size_t max_size = DelayWindowSize(params_.delay_frames);
+    while (raw_buffer_.size() > max_size) {
+        raw_buffer_.pop_front();
+        timestamp_buffer_.pop_front();
+    }
+}
+
+Sn3DAlgorithm::RigidMatrix ButterworthZRealtimeFilter::DelayedWindowOutput() const {
+    if (raw_buffer_.empty()) {
+        throw std::invalid_argument("delay buffer is empty");
+    }
+    const std::size_t target_index =
+        DelayedTargetIndex(raw_buffer_.size(), params_.delay_frames);
+    std::vector<double> z_values;
+    z_values.reserve(raw_buffer_.size());
+    for (const Sn3DAlgorithm::RigidMatrix& frame : raw_buffer_) {
+        z_values.push_back(frame.get_translation().z());
+    }
+    const double sample_rate_hz = SampleRateFromDelayBuffer(
+        timestamp_buffer_,
+        params_.sample_rate_hz,
+        params_.strict_timestamps);
+    Sn3DAlgorithm::RigidMatrix filtered = raw_buffer_[target_index];
+    filtered.get_translation().z() =
+        ApplyForwardBackwardWindow(z_values, target_index, params_, sample_rate_hz);
+    return filtered;
 }
 
 void ButterworthZRealtimeFilter::PushHistory(const Sn3DAlgorithm::RigidMatrix& rigid) {

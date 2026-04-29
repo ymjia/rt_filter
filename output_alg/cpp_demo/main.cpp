@@ -78,6 +78,7 @@ Options DefaultOptions() {
     options.butterworth.order = 2;
     options.butterworth.sample_rate_hz = 100.0;
     options.butterworth.history_size = 0;
+    options.butterworth.delay_frames = 0;
     options.butterworth.strict_timestamps = false;
 
     // One Euro Z 当前推荐参数：偏向 SN 数据中 Z 方向静止降噪，同时保留速度自适应。
@@ -87,6 +88,7 @@ Options DefaultOptions() {
     options.one_euro.derivative_deadband = 1.0;
     options.one_euro.sample_rate_hz = 100.0;
     options.one_euro.history_size = 0;
+    options.one_euro.delay_frames = 0;
     options.one_euro.strict_timestamps = false;
 
     // UKF 当前推荐参数：匀速模型，过程噪声较大以保证跟手，观测噪声较小以避免
@@ -294,8 +296,9 @@ void PrintUsage() {
         << "  --output outputs/cpp_demo/noisy_line_ukf.csv\n\n"
         << "Butterworth realtime params:\n"
         << "  --cutoff-hz 20.0 --order 2\n"
+        << "  butterworth_z also supports --delay-frames 0\n"
         << "One Euro params:\n"
-        << "  --min-cutoff 0.02 --beta 6.0 --d-cutoff 2.0 --derivative-deadband 1.0\n"
+        << "  --min-cutoff 0.02 --beta 6.0 --d-cutoff 2.0 --derivative-deadband 1.0 --delay-frames 0\n"
         << "UKF params:\n"
         << "  --motion-model constant_velocity --process-noise 1000 --measurement-noise 0.001\n"
         << "  --initial-linear-velocity vx,vy,vz --initial-angular-velocity wx,wy,wz\n";
@@ -334,6 +337,13 @@ Options ParseOptions(int argc, char** argv) {
             options.butterworth.strict_timestamps = true;
             options.one_euro.strict_timestamps = true;
             options.ukf.strict_timestamps = true;
+        } else if (key == "--delay-frames") {
+            const int value = ParseInt(require_value(), key);
+            if (value < 0) {
+                throw std::invalid_argument("--delay-frames must be >= 0");
+            }
+            options.butterworth.delay_frames = static_cast<std::size_t>(value);
+            options.one_euro.delay_frames = static_cast<std::size_t>(value);
         } else if (key == "--cutoff-hz") {
             // Realtime Butterworth：因果低通截止频率，越低越平滑，但真实局部波峰也会被更强压制。
             options.butterworth.cutoff_hz = ParseDouble(require_value(), key);

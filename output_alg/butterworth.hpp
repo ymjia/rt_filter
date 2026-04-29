@@ -33,6 +33,11 @@ struct ButterworthParameters {
     // RealtimeFilter 内部保留的输出历史长度。0 表示不限制长度。
     std::size_t history_size = 0;
 
+    // 0 keeps the original causal update. Values > 0 enable fixed-lag smoothing
+    // for Z-only realtime filtering: update N returns frame N - delay_frames,
+    // filtered with up to 2 * delay_frames + 1 recent raw frames.
+    std::size_t delay_frames = 0;
+
     // true 时，非递增时间戳会抛异常；false 时会回退到 sample_rate_hz 对应的 dt。
     bool strict_timestamps = false;
 };
@@ -141,6 +146,8 @@ private:
     static void Validate(const ButterworthZParameters& params);
     double DeltaTime(OptionalDouble timestamp) const;
     void Redesign(double sample_rate_hz, double anchor_value);
+    void PushDelayBuffer(const Sn3DAlgorithm::RigidMatrix& rigid, OptionalDouble timestamp);
+    Sn3DAlgorithm::RigidMatrix DelayedWindowOutput() const;
     void PushHistory(const Sn3DAlgorithm::RigidMatrix& rigid);
 
     ButterworthZParameters params_;
@@ -149,6 +156,8 @@ private:
     double last_output_z_ = 0.0;
     OptionalDouble last_timestamp_;
     std::vector<ButterworthSectionState> sections_;
+    std::deque<Sn3DAlgorithm::RigidMatrix> raw_buffer_;
+    std::deque<OptionalDouble> timestamp_buffer_;
     std::deque<Sn3DAlgorithm::RigidMatrix> history_;
 };
 

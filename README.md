@@ -66,7 +66,7 @@ rt-filter catalog
 | `one_euro_z` | `min_cutoff`, `beta`, `d_cutoff`, `derivative_deadband`, `sample_rate_hz` | Z 方向 One Euro 自适应低通；只改 Z，保留 X/Y 和姿态 | Z 噪声明显大于 X/Y、需要在线实时且减少拖影的静止或慢速转向场景 | 只处理 Z 随机噪声；`min_cutoff` 太低或 `derivative_deadband` 太大仍会产生滞后 |
 | `adaptive_kalman_z` | `process_noise`, `measurement_noise`, `initial_covariance`, `motion_process_gain`, `velocity_deadband`, `innovation_scale`, `innovation_gate`, `max_measurement_scale`, `sample_rate_hz` | Z 方向自适应标量 Kalman；只改 Z，带创新门控与可选速度自适应 | 当前默认更偏静态场景；适合 Z 噪声明显更大、且希望比 One Euro 更强抑制慢漂和偶发尖峰的场景 | 静态默认参数在真实动态轨迹上可能过强；拿到真实动态数据后需要重新整定 |
 
-如果已经通过 `python3 scripts/build_cpp_demo.py` 构建了独立 C++ demo，GUI 和分析链路里还会出现 `ukf-cpp` 与 `one_euro_z-cpp`。这两个条目会由 Python 调用 `rt_filter_cpp_demo` 可执行程序，并直接导入该程序写出的轨迹结果与每帧耗时数据。
+如果已经通过 `python3 scripts/build_cpp_demo.py` 构建了独立 C++ demo，GUI 和分析链路里还会出现 `butterworth-cpp`、`butterworth_z-cpp`、`ukf-cpp` 与 `one_euro_z-cpp`。这些条目会由 Python 调用 `rt_filter_cpp_demo` 可执行程序，并直接导入该程序写出的轨迹结果与每帧耗时数据。
 
 ### `moving_average`
 
@@ -599,7 +599,7 @@ python scripts/build_gui.py
 构建脚本会调用 `PyInstaller`，并自动执行一次 `--smoke-test`：
 
 - macOS 产物：`dist/rt-filter-gui.app`
-- Windows 产物：`dist/rt-filter-gui/rt-filter-gui.exe`
+- Windows 产物：`dist/rt-filter-gui.exe`
 
 构建脚本还会把 `rt_filter_gui.json` 复制到打包产物旁边，便于后续直接修改配置。
 

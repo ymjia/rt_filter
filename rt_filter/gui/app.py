@@ -666,6 +666,7 @@ class MainWindow(QMainWindow):
         self.run_dir: Path | None = None
         self.curve_visibility: dict[str, bool] = {}
         self._updating_curve_table = False
+        self._persist_input_state_enabled = True
         self.detached_plot_window: DetachedPlotWindow | None = None
 
         self._build_actions()
@@ -673,6 +674,8 @@ class MainWindow(QMainWindow):
         self._load_default_filters()
 
     def _persist_input_state(self) -> None:
+        if not self._persist_input_state_enabled:
+            return
         try:
             selected_path = None
             row = self.input_table.currentRow()
@@ -1359,6 +1362,7 @@ class MainWindow(QMainWindow):
                         {
                             "cutoff_hz": 20.0,
                             "order": 2,
+                            "delay_frames": 0,
                         },
                     ),
                     (
@@ -1378,6 +1382,7 @@ class MainWindow(QMainWindow):
                             "beta": 6.0,
                             "d_cutoff": 2.0,
                             "derivative_deadband": 1.0,
+                            "delay_frames": 0,
                         },
                     ),
                 ]
@@ -1947,8 +1952,14 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         app = QApplication([sys.argv[0]])
         window = MainWindow()
+        window._persist_input_state_enabled = False
         window._append_inputs(_default_input_files())
-        print(f"smoke ok: inputs={window.input_table.rowCount()} filters={window.filter_table.rowCount()}")
+        print(
+            "smoke ok: "
+            f"inputs={window.input_table.rowCount()} "
+            f"filters={window.filter_table.rowCount()} "
+            f"cpp_demo={cpp_demo_available()}"
+        )
         window.close()
         app.quit()
         return 0

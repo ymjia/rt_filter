@@ -100,3 +100,44 @@ def test_stateful_update_matches_batch_filtering():
     batched = filter_trajectory(poses, timestamps, params)
 
     np.testing.assert_allclose(updated, batched)
+
+
+def test_delay_frames_returns_delayed_pose_matrix():
+    z = np.linspace(0.0, 9.0, 10)
+    poses = _poses(z)
+    timestamps = np.arange(len(poses), dtype=float) / 100.0
+    params = OneEuroZParameters(
+        min_cutoff=1000.0,
+        beta=0.0,
+        d_cutoff=2.0,
+        derivative_deadband=0.0,
+        sample_rate_hz=100.0,
+        delay_frames=3,
+    )
+    filter_z = OneEuroZRealtimeFilter(params)
+
+    updated = np.stack([filter_z.update(pose, float(ts)) for pose, ts in zip(poses, timestamps, strict=True)])
+
+    np.testing.assert_allclose(updated[6, 0, 3], poses[3, 0, 3])
+    np.testing.assert_allclose(updated[6, 1, 3], poses[3, 1, 3])
+    np.testing.assert_allclose(updated[6, :3, :3], poses[3, :3, :3])
+
+
+def test_delay_frames_uses_future_frames_for_center_z():
+    z = np.array([0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0])
+    poses = _poses(z)
+    timestamps = np.arange(len(poses), dtype=float) / 100.0
+    params = OneEuroZParameters(
+        min_cutoff=0.02,
+        beta=0.0,
+        d_cutoff=2.0,
+        derivative_deadband=0.0,
+        sample_rate_hz=100.0,
+        delay_frames=3,
+    )
+    filter_z = OneEuroZRealtimeFilter(params)
+
+    updated = np.stack([filter_z.update(pose, float(ts)) for pose, ts in zip(poses, timestamps, strict=True)])
+
+    assert updated[6, 2, 3] < poses[3, 2, 3]
+    assert updated[6, 2, 3] > 0.0

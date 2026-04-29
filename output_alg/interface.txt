@@ -70,6 +70,7 @@ output_alg::ButterworthZParameters butterworthZParams;
 butterworthZParams.cutoff_hz = 20.0;
 butterworthZParams.order = 2;
 butterworthZParams.sample_rate_hz = 100.0;
+butterworthZParams.delay_frames = 0;
 std::unordered_map<int, output_alg::ButterworthZRealtimeFilter> m_groupedButterworthZFilters;
 
 auto calcButterworthZEulerZyx = [&](int& groupId, Eigen::Vector3d& pos, Eigen::Vector3d& eulerZyx) -> bool {
@@ -108,6 +109,7 @@ oneEuroParams.beta = 6.0;
 oneEuroParams.d_cutoff = 2.0;
 oneEuroParams.derivative_deadband = 1.0;
 oneEuroParams.sample_rate_hz = 100.0;
+oneEuroParams.delay_frames = 0;
 std::unordered_map<int, output_alg::OneEuroZRealtimeFilter> m_groupedOneEuroZFilters;
 
 auto calcOneEuroZEulerZyx = [&](int& groupId, Eigen::Vector3d& pos, Eigen::Vector3d& eulerZyx) -> bool {

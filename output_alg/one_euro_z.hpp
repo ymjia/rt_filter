@@ -40,6 +40,11 @@ struct OneEuroZParameters {
     // 显示，通常可设置一个较小窗口，避免长期运行时 history_ 增长。
     std::size_t history_size = 0;
 
+    // 0 keeps the original causal update. Values > 0 enable fixed-lag smoothing:
+    // update N returns the frame N - delay_frames, filtered with up to
+    // 2 * delay_frames + 1 recent raw frames.
+    std::size_t delay_frames = 0;
+
     // true 时，非递增时间戳会抛异常；false 时会回退到 sample_rate_hz 对应的 dt。
     bool strict_timestamps = false;
 };
@@ -104,6 +109,12 @@ private:
     static void Validate(const OneEuroZParameters& params);
     static double LowpassAlpha(double cutoff, double dt);
     double DeltaTime(OptionalDouble timestamp) const;
+    void PushDelayBuffer(const Sn3DAlgorithm::RigidMatrix& rigid, OptionalDouble timestamp);
+    Sn3DAlgorithm::RigidMatrix DelayedWindowOutput() const;
+    double SmoothedDelayedZ() const;
+    double BufferDt(std::size_t previous_index, std::size_t index) const;
+    double BufferMeanDt() const;
+    double EstimateWindowDerivative(std::size_t target_index) const;
     void PushHistory(const Sn3DAlgorithm::RigidMatrix& rigid);
 
     OneEuroZParameters params_;
@@ -112,6 +123,8 @@ private:
     double filtered_z_ = 0.0;
     double derivative_hat_ = 0.0;
     OptionalDouble last_timestamp_;
+    std::deque<Sn3DAlgorithm::RigidMatrix> raw_buffer_;
+    std::deque<OptionalDouble> timestamp_buffer_;
     std::deque<Sn3DAlgorithm::RigidMatrix> history_;
 };
 

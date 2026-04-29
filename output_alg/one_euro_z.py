@@ -28,6 +28,7 @@ class OneEuroZParameters:
     derivative_deadband: float = 1.0
     sample_rate_hz: float = 100.0
     history_size: int = 0
+    delay_frames: int = 0
     strict_timestamps: bool = False
 
     def validate(self) -> None:
@@ -43,6 +44,8 @@ class OneEuroZParameters:
             raise ValueError("sample_rate_hz must be positive")
         if self.history_size < 0:
             raise ValueError("history_size must be >= 0")
+        if self.delay_frames < 0:
+            raise ValueError("delay_frames must be >= 0")
 
 
 class OneEuroZRealtimeFilter:
@@ -64,6 +67,10 @@ class OneEuroZRealtimeFilter:
         self._derivative_hat = 0.0
         self._last_timestamp: float | None = None
         self._history: deque[PoseArray] = deque(maxlen=self.params.history_size or None)
+        self._raw_buffer: deque[PoseArray] = deque(maxlen=_delay_window_size(self.params.delay_frames))
+        self._timestamp_buffer: deque[float | None] = deque(
+            maxlen=_delay_window_size(self.params.delay_frames)
+        )
 
     def set_parameters(self, params: OneEuroZParameters, *, reset: bool = False) -> None:
         params.validate()
@@ -72,6 +79,14 @@ class OneEuroZRealtimeFilter:
             self.reset()
         else:
             self._history = deque(self._history, maxlen=self.params.history_size or None)
+            self._raw_buffer = deque(
+                self._raw_buffer,
+                maxlen=_delay_window_size(self.params.delay_frames),
+            )
+            self._timestamp_buffer = deque(
+                self._timestamp_buffer,
+                maxlen=_delay_window_size(self.params.delay_frames),
+            )
 
     @property
     def history(self) -> list[PoseArray]:
@@ -83,6 +98,17 @@ class OneEuroZRealtimeFilter:
         pose_arr = _as_pose(pose)
         filtered = pose_arr.copy()
         raw_z = float(pose_arr[2, 3])
+
+        if self.params.delay_frames > 0:
+            self._push_delay_frame(pose_arr, timestamp)
+            target_index = _delayed_target_index(len(self._raw_buffer), self.params.delay_frames)
+            filtered = self._raw_buffer[target_index].copy()
+            filtered[2, 3] = self._smoothed_delayed_z(target_index)
+            if timestamp is not None:
+                self._last_timestamp = float(timestamp)
+            self._initialized = True
+            self._history.append(filtered.copy())
+            return filtered
 
         if not self._initialized:
             self._initialized = True
@@ -112,6 +138,80 @@ class OneEuroZRealtimeFilter:
         filtered[2, 3] = self._filtered_z
         self._history.append(filtered.copy())
         return filtered
+
+    def _push_delay_frame(self, pose: PoseArray, timestamp: float | None) -> None:
+        if timestamp is not None and self._last_timestamp is not None:
+            dt = float(timestamp) - self._last_timestamp
+            if dt <= 0 and self.params.strict_timestamps:
+                raise ValueError("timestamps must be strictly increasing")
+        self._raw_buffer.append(pose.copy())
+        self._timestamp_buffer.append(None if timestamp is None else float(timestamp))
+
+    def _smoothed_delayed_z(self, target_index: int) -> float:
+        if len(self._raw_buffer) <= 1:
+            return float(self._raw_buffer[target_index][2, 3])
+
+        dt = self._buffer_mean_dt()
+        derivative_hat = self._estimate_window_derivative(target_index)
+        effective_derivative = max(abs(derivative_hat) - self.params.derivative_deadband, 0.0)
+        cutoff = self.params.min_cutoff + self.params.beta * effective_derivative
+        value_alpha = _lowpass_alpha(cutoff, dt)
+        decay = 1.0 - value_alpha
+
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        for index, pose in enumerate(self._raw_buffer):
+            weight = decay ** abs(index - target_index)
+            weighted_sum += weight * float(pose[2, 3])
+            weight_sum += weight
+        if weight_sum <= 0.0:
+            return float(self._raw_buffer[target_index][2, 3])
+        return float(weighted_sum / weight_sum)
+
+    def _buffer_dt(self, previous_index: int, index: int) -> float:
+        nominal = 1.0 / self.params.sample_rate_hz
+        try:
+            previous = self._timestamp_buffer[previous_index]
+            current = self._timestamp_buffer[index]
+        except IndexError:
+            return nominal
+        if previous is None or current is None:
+            return nominal
+        dt = float(current) - float(previous)
+        if dt > 0:
+            return dt
+        if self.params.strict_timestamps:
+            raise ValueError("timestamps must be strictly increasing")
+        return nominal
+
+    def _buffer_mean_dt(self) -> float:
+        if len(self._raw_buffer) <= 1:
+            return 1.0 / self.params.sample_rate_hz
+        values = [self._buffer_dt(index - 1, index) for index in range(1, len(self._raw_buffer))]
+        valid = [value for value in values if value > 0.0]
+        if not valid:
+            return 1.0 / self.params.sample_rate_hz
+        return float(np.mean(valid))
+
+    def _estimate_window_derivative(self, target_index: int) -> float:
+        if len(self._raw_buffer) <= 1:
+            return 0.0
+        derivative_alpha = _lowpass_alpha(self.params.d_cutoff, self._buffer_mean_dt())
+        derivative_decay = 1.0 - derivative_alpha
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        for index in range(1, len(self._raw_buffer)):
+            dt = self._buffer_dt(index - 1, index)
+            previous_z = float(self._raw_buffer[index - 1][2, 3])
+            current_z = float(self._raw_buffer[index][2, 3])
+            derivative = (current_z - previous_z) / dt
+            step_center = float(index) - 0.5
+            weight = derivative_decay ** abs(step_center - float(target_index))
+            weighted_sum += weight * derivative
+            weight_sum += weight
+        if weight_sum <= 0.0:
+            return 0.0
+        return float(weighted_sum / weight_sum)
 
     def filter_trajectory(
         self,
@@ -204,3 +304,17 @@ def _timestamps(timestamps: Iterable[float] | None, count: int) -> PoseArray | N
 def _lowpass_alpha(cutoff: float, dt: float) -> float:
     tau = 1.0 / (2.0 * np.pi * cutoff)
     return float(dt / (dt + tau))
+
+
+def _delay_window_size(delay_frames: int) -> int | None:
+    if delay_frames <= 0:
+        return None
+    return 2 * int(delay_frames) + 1
+
+
+def _delayed_target_index(count: int, delay_frames: int) -> int:
+    if count <= 0:
+        return 0
+    if count > delay_frames:
+        return count - 1 - delay_frames
+    return 0

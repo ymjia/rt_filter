@@ -35,6 +35,7 @@ X/Y translation and rotation are copied unchanged.
 | `derivative_deadband` | Z velocity deadband before adaptive cutoff; higher values keep small static jitter from weakening denoising. |
 | `sample_rate_hz` | Used when frame timestamps are not supplied. |
 | `history_size` | Number of filtered poses retained by the realtime object; `0` keeps all. |
+| `delay_frames` | `0` keeps the original causal update. Values such as `3` return a frame delayed by 3 samples and smooth it with up to `2 * delay_frames + 1` recent raw frames. |
 
 Recommended initial values for the current SN noise profile:
 
@@ -44,6 +45,7 @@ beta = 6.0
 d_cutoff = 2.0
 derivative_deadband = 1.0
 sample_rate_hz = 100.0
+delay_frames = 0
 ```
 
 ## Python Usage
@@ -87,6 +89,7 @@ params.beta = 6.0;
 params.d_cutoff = 2.0;
 params.derivative_deadband = 1.0;
 params.sample_rate_hz = 100.0;
+params.delay_frames = 0;
 
 OneEuroZRealtimeFilter filter(params);
 RigidMatrix display_pose = filter.Update(current_rigid, current_time_s);
@@ -113,6 +116,7 @@ Key parameters:
 | `order` | Butterworth order; `2` is the recommended starting point. |
 | `sample_rate_hz` | Used when frame timestamps are not supplied. |
 | `history_size` | Number of filtered poses retained by the realtime object; `0` keeps all. |
+| `delay_frames` | For `ButterworthZRealtimeFilter`, `0` keeps the original causal IIR update. Values such as `3` return a Z-filtered frame delayed by 3 samples and use up to 7 recent raw frames for zero-phase local smoothing. |
 
 C++ usage:
 
@@ -132,6 +136,7 @@ output_alg::ButterworthZParameters z_params;
 z_params.cutoff_hz = 20.0;
 z_params.order = 2;
 z_params.sample_rate_hz = 100.0;
+z_params.delay_frames = 0;
 
 output_alg::ButterworthZRealtimeFilter z_filter(z_params);
 Sn3DAlgorithm::RigidMatrix z_display = z_filter.Update(current_rigid, current_time_s);

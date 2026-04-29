@@ -132,7 +132,8 @@ build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
   --min-cutoff 0.02 \
   --beta 6.0 \
   --d-cutoff 2.0 \
-  --derivative-deadband 1.0
+  --derivative-deadband 1.0 \
+  --delay-frames 3
 ```
 
 `butterworth_z` example:
@@ -143,7 +144,8 @@ build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
   --input input/sn/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv \
   --output outputs/cpp_demo/case11_butterworth_z.csv \
   --cutoff-hz 20.0 \
-  --order 2
+  --order 2 \
+  --delay-frames 3
 ```
 
 `butterworth` example:
