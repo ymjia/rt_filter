@@ -76,6 +76,13 @@ public:
         const Sn3DAlgorithm::RigidMatrix& rigid,
         OptionalDouble timestamp = OptionalDouble());
 
+    // 单帧实时接口重载。输入一帧轨迹点坐标，返回滤波后的点坐标。
+    // 仅 z 分量会被修改；x/y 会保持输入值。timestamp 单位为秒；未提供时使用
+    // sample_rate_hz。
+    Eigen::Vector3d Update(
+        const Eigen::Vector3d& point,
+        OptionalDouble timestamp = OptionalDouble());
+
     // 单帧实时接口的计时版本。返回本帧滤波结果和该帧计算耗时（ns）。
     TimedRigidResult UpdateTimed(
         const Sn3DAlgorithm::RigidMatrix& rigid,

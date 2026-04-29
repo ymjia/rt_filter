@@ -115,6 +115,13 @@ Sn3DAlgorithm::RigidMatrix OneEuroZRealtimeFilter::Update(
     return filtered;
 }
 
+Eigen::Vector3d OneEuroZRealtimeFilter::Update(
+    const Eigen::Vector3d& point,
+    OptionalDouble timestamp) {
+    Sn3DAlgorithm::RigidMatrix rigid(Eigen::Matrix3d::Identity(), point);
+    return Update(rigid, timestamp).get_translation();
+}
+
 TimedRigidResult OneEuroZRealtimeFilter::UpdateTimed(
     const Sn3DAlgorithm::RigidMatrix& rigid,
     OptionalDouble timestamp) {
