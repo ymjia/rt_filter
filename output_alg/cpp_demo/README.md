@@ -129,10 +129,10 @@ build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
   --algorithm one_euro_z \
   --input input/sn/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms/case_11_synthetic_rectangle_high_base_case10_noise_speed_100mms_01_rectangle_100mms.csv \
   --output outputs/cpp_demo/case11_one_euro_z.csv \
-  --min-cutoff 0.02 \
-  --beta 6.0 \
-  --d-cutoff 2.0 \
-  --derivative-deadband 1.0
+  --min-cutoff 1.0 \
+  --beta 10.0 \
+  --d-cutoff 8.0 \
+  --derivative-deadband 0.02
 ```
 
 `butterworth_z` example:

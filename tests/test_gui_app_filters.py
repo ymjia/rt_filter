@@ -29,6 +29,35 @@ def test_gui_algorithm_change_resets_params_to_filter_defaults():
         app.processEvents()
 
 
+def test_gui_one_euro_z_algorithm_change_uses_tuned_defaults():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication, QComboBox
+
+    from rt_filter.gui.app import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        combo = window.filter_table.cellWidget(0, 1)
+        assert isinstance(combo, QComboBox)
+
+        combo.setCurrentText("one_euro_z")
+
+        params = json.loads(window.filter_table.item(0, 2).text())
+        assert params == {
+            "min_cutoff": 1.0,
+            "beta": 10.0,
+            "d_cutoff": 8.0,
+            "derivative_deadband": 0.02,
+            "sample_rate_hz": 100.0,
+        }
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_gui_cpp_status_and_presets_include_butterworth_cpp(monkeypatch: pytest.MonkeyPatch):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
@@ -48,6 +77,28 @@ def test_gui_cpp_status_and_presets_include_butterworth_cpp(monkeypatch: pytest.
     assert "one_euro_z-cpp" in preset_names
     assert "butterworth-cpp" in status_text
     assert "butterworth_z-cpp" in status_text
+
+
+def test_gui_one_euro_z_cpp_preset_uses_tuned_defaults(monkeypatch: pytest.MonkeyPatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from rt_filter.gui.app import MainWindow
+
+    monkeypatch.setattr("rt_filter.gui.app.cpp_demo_available", lambda: True)
+
+    dummy = object()
+    presets = MainWindow._default_filter_presets(dummy)
+    cpp_presets = [params for name, params in presets if name == "one_euro_z-cpp"]
+
+    assert cpp_presets == [
+        {
+            "min_cutoff": 1.0,
+            "beta": 10.0,
+            "d_cutoff": 8.0,
+            "derivative_deadband": 0.02,
+        }
+    ]
 
 
 def test_gui_one_euro_z_presets_include_butterworth_like_candidates():

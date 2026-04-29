@@ -103,10 +103,10 @@ return output_alg::FilterButterworthEulerZyx(iter->second, pos, eulerZyx);
 // Include euler_zyx_interface.hpp, and put parameters plus m_groupedOneEuroZFilters
 // on the external class.
 output_alg::OneEuroZParameters oneEuroParams;
-oneEuroParams.min_cutoff = 0.02;
-oneEuroParams.beta = 6.0;
-oneEuroParams.d_cutoff = 2.0;
-oneEuroParams.derivative_deadband = 1.0;
+oneEuroParams.min_cutoff = 1.0;
+oneEuroParams.beta = 10.0;
+oneEuroParams.d_cutoff = 8.0;
+oneEuroParams.derivative_deadband = 0.02;
 oneEuroParams.sample_rate_hz = 100.0;
 std::unordered_map<int, output_alg::OneEuroZRealtimeFilter> m_groupedOneEuroZFilters;
 

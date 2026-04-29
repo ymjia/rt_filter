@@ -1292,18 +1292,6 @@ class MainWindow(QMainWindow):
                 "one_euro_z",
                 [
                     {
-                        "min_cutoff": 0.02,
-                        "beta": 6.0,
-                        "d_cutoff": 2.0,
-                        "derivative_deadband": 1.0,
-                    },
-                    {
-                        "min_cutoff": 0.7,
-                        "beta": 4.0,
-                        "d_cutoff": 1.0,
-                        "derivative_deadband": 0.0,
-                    },
-                    {
                         "min_cutoff": 1.0,
                         "beta": 10.0,
                         "d_cutoff": 8.0,
@@ -1314,6 +1302,12 @@ class MainWindow(QMainWindow):
                         "beta": 10.0,
                         "d_cutoff": 8.0,
                         "derivative_deadband": 0.05,
+                    },
+                    {
+                        "min_cutoff": 0.7,
+                        "beta": 4.0,
+                        "d_cutoff": 1.0,
+                        "derivative_deadband": 0.0,
                     },
                 ],
             ),
@@ -1386,10 +1380,10 @@ class MainWindow(QMainWindow):
                     (
                         "one_euro_z-cpp",
                         {
-                            "min_cutoff": 0.02,
-                            "beta": 6.0,
-                            "d_cutoff": 2.0,
-                            "derivative_deadband": 1.0,
+                            "min_cutoff": 1.0,
+                            "beta": 10.0,
+                            "d_cutoff": 8.0,
+                            "derivative_deadband": 0.02,
                         },
                     ),
                 ]

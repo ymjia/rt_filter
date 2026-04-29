@@ -39,10 +39,10 @@ X/Y translation and rotation are copied unchanged.
 Recommended initial values for the current SN noise profile:
 
 ```text
-min_cutoff = 0.02
-beta = 6.0
-d_cutoff = 2.0
-derivative_deadband = 1.0
+min_cutoff = 1.0
+beta = 10.0
+d_cutoff = 8.0
+derivative_deadband = 0.02
 sample_rate_hz = 100.0
 ```
 
@@ -53,10 +53,10 @@ import numpy as np
 from output_alg.one_euro_z import OneEuroZParameters, OneEuroZRealtimeFilter
 
 params = OneEuroZParameters(
-    min_cutoff=0.02,
-    beta=6.0,
-    d_cutoff=2.0,
-    derivative_deadband=1.0,
+    min_cutoff=1.0,
+    beta=10.0,
+    d_cutoff=8.0,
+    derivative_deadband=0.02,
     sample_rate_hz=100.0,
 )
 filter_z = OneEuroZRealtimeFilter(params)
@@ -82,10 +82,10 @@ using output_alg::OneEuroZRealtimeFilter;
 using Sn3DAlgorithm::RigidMatrix;
 
 OneEuroZParameters params;
-params.min_cutoff = 0.02;
-params.beta = 6.0;
-params.d_cutoff = 2.0;
-params.derivative_deadband = 1.0;
+params.min_cutoff = 1.0;
+params.beta = 10.0;
+params.d_cutoff = 8.0;
+params.derivative_deadband = 0.02;
 params.sample_rate_hz = 100.0;
 
 OneEuroZRealtimeFilter filter(params);

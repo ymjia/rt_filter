@@ -86,11 +86,11 @@ CPP_FILTER_SPECS: dict[str, dict[str, Any]] = {
             "and timing outputs for GUI analysis."
         ),
         "defaults": {
-            "min_cutoff": 0.02,
-            "beta": 6.0,
-            "d_cutoff": 2.0,
-            "derivative_deadband": 1.0,
-            "sample_rate_hz": 80.0,
+            "min_cutoff": 1.0,
+            "beta": 10.0,
+            "d_cutoff": 8.0,
+            "derivative_deadband": 0.02,
+            "sample_rate_hz": 100.0,
         },
     },
     "ukf_cpp": {
@@ -165,11 +165,11 @@ def available_filters() -> dict[str, FilterInfo]:
             name="one_euro_z",
             description="Causal One Euro adaptive low-pass filtering on Z translation only.",
             defaults={
-                "min_cutoff": 0.02,
-                "beta": 6.0,
-                "d_cutoff": 2.0,
-                "derivative_deadband": 1.0,
-                "sample_rate_hz": 80.0,
+                "min_cutoff": 1.0,
+                "beta": 10.0,
+                "d_cutoff": 8.0,
+                "derivative_deadband": 0.02,
+                "sample_rate_hz": 100.0,
             },
         ),
         "butterworth": FilterInfo(
@@ -1019,11 +1019,11 @@ def one_euro_filter(
 
 def one_euro_z_filter(
     traj: Trajectory,
-    min_cutoff: float = 0.02,
-    beta: float = 6.0,
-    d_cutoff: float = 2.0,
-    derivative_deadband: float = 1.0,
-    sample_rate_hz: float = 80.0,
+    min_cutoff: float = 1.0,
+    beta: float = 10.0,
+    d_cutoff: float = 8.0,
+    derivative_deadband: float = 0.02,
+    sample_rate_hz: float = 100.0,
 ) -> Trajectory:
     result, _, _ = _one_euro_translation_filter_impl(
         traj,
@@ -1066,11 +1066,11 @@ def _run_one_euro_timed(
 
 def _run_one_euro_z_timed(
     traj: Trajectory,
-    min_cutoff: float = 0.02,
-    beta: float = 6.0,
-    d_cutoff: float = 2.0,
-    derivative_deadband: float = 1.0,
-    sample_rate_hz: float = 80.0,
+    min_cutoff: float = 1.0,
+    beta: float = 10.0,
+    d_cutoff: float = 8.0,
+    derivative_deadband: float = 0.02,
+    sample_rate_hz: float = 100.0,
 ) -> TimedFilterRun:
     result, per_pose_time_ns, total_time_ns = _one_euro_translation_filter_impl(
         traj,
