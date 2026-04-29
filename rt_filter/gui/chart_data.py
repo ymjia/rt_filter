@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
+from pathlib import Path
+import re
 
 import numpy as np
+from scipy.signal import savgol_filter
+
+
+EXPECTED_PATH_CACHE_VERSION = 1
+DEFAULT_EXPECTED_PATH_MAX_DEVIATION_MM = 10.0
+DEFAULT_EXPECTED_PATH_CACHE_DIR = Path(__file__).resolve().parents[2] / "outputs" / "expected_path_cache"
 
 
 @dataclass(frozen=True)
@@ -64,7 +74,11 @@ def complete_neighbor_slice(count: int, window: int) -> slice:
     return slice(window, count - window)
 
 
-def fit_expected_path(values: np.ndarray) -> ExpectedPathModel:
+def fit_expected_path(
+    values: np.ndarray,
+    *,
+    max_deviation_mm: float = DEFAULT_EXPECTED_PATH_MAX_DEVIATION_MM,
+) -> ExpectedPathModel:
     """Fit a sample-aligned expected path from raw XYZ positions.
 
     The returned model has one expected point and one local tangent per input
@@ -74,6 +88,8 @@ def fit_expected_path(values: np.ndarray) -> ExpectedPathModel:
     """
 
     positions = _positions(values)
+    if max_deviation_mm <= 0.0:
+        raise ValueError("max_deviation_mm must be positive")
     count = positions.shape[0]
     if count == 1:
         return ExpectedPathModel(
@@ -87,7 +103,7 @@ def fit_expected_path(values: np.ndarray) -> ExpectedPathModel:
     if static_line is not None:
         start, end, start_count, end_count = static_line
         expected, tangent = _line_expected(positions, start, end)
-        return ExpectedPathModel(
+        model = ExpectedPathModel(
             kind="line-static",
             expected=expected,
             tangent=tangent,
@@ -97,12 +113,14 @@ def fit_expected_path(values: np.ndarray) -> ExpectedPathModel:
                 "length": float(np.linalg.norm(end - start)),
             },
         )
+        if _model_is_acceptable(positions, model, max_deviation_mm):
+            return model
 
     pca_line = _pca_line(positions)
     if pca_line is not None:
         start, end, linearity = pca_line
         expected, tangent = _line_expected(positions, start, end)
-        return ExpectedPathModel(
+        model = ExpectedPathModel(
             kind="line-pca",
             expected=expected,
             tangent=tangent,
@@ -111,24 +129,90 @@ def fit_expected_path(values: np.ndarray) -> ExpectedPathModel:
                 "length": float(np.linalg.norm(end - start)),
             },
         )
+        if _model_is_acceptable(positions, model, max_deviation_mm):
+            return model
 
     ellipse = _ellipse_expected(positions)
     if ellipse is not None:
         expected, tangent, residual = ellipse
-        return ExpectedPathModel(
+        model = ExpectedPathModel(
             kind="ellipse",
             expected=expected,
             tangent=tangent,
             details={"median_radial_residual": residual},
         )
+        if _model_is_acceptable(positions, model, max_deviation_mm):
+            return model
 
     expected, tangent, vertex_count = _polyline_expected(positions)
-    return ExpectedPathModel(
+    model = ExpectedPathModel(
         kind="polyline",
         expected=expected,
         tangent=tangent,
         details={"vertices": vertex_count},
     )
+    if _model_is_acceptable(positions, model, max_deviation_mm):
+        return model
+
+    smooth_curve = _savgol_curve_expected(positions, max_deviation_mm)
+    if smooth_curve is not None:
+        expected, tangent, window, polyorder, max_error = smooth_curve
+        return ExpectedPathModel(
+            kind="savgol-curve",
+            expected=expected,
+            tangent=tangent,
+            details={
+                "window": window,
+                "polyorder": polyorder,
+                "max_deviation_mm": max_error,
+            },
+        )
+
+    smooth_curve = _savgol_curve_expected(positions, max_deviation_mm, allow_tight=True)
+    if smooth_curve is not None:
+        expected, tangent, window, polyorder, max_error = smooth_curve
+        return ExpectedPathModel(
+            kind="savgol-curve",
+            expected=expected,
+            tangent=tangent,
+            details={
+                "window": window,
+                "polyorder": polyorder,
+                "max_deviation_mm": max_error,
+                "tight_fallback": 1,
+            },
+        )
+    return model
+
+
+def fit_expected_path_cached(
+    values: np.ndarray,
+    *,
+    source_path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    max_deviation_mm: float = DEFAULT_EXPECTED_PATH_MAX_DEVIATION_MM,
+) -> ExpectedPathModel:
+    """Fit an expected path and persist successful fits for later GUI runs."""
+
+    positions = _positions(values)
+    if source_path is None:
+        return fit_expected_path(positions, max_deviation_mm=max_deviation_mm)
+
+    directory = Path(cache_dir) if cache_dir is not None else DEFAULT_EXPECTED_PATH_CACHE_DIR
+    cache_path = _expected_path_cache_path(
+        positions,
+        source_path=Path(source_path),
+        cache_dir=directory,
+        max_deviation_mm=max_deviation_mm,
+    )
+    cached = _load_expected_path_cache(cache_path, positions, max_deviation_mm)
+    if cached is not None:
+        return cached
+
+    model = fit_expected_path(positions, max_deviation_mm=max_deviation_mm)
+    if _model_is_acceptable(positions, model, max_deviation_mm):
+        _save_expected_path_cache(cache_path, model, source_path=Path(source_path), max_deviation_mm=max_deviation_mm)
+    return model
 
 
 def path_deviation(values: np.ndarray, model: ExpectedPathModel) -> PathDeviation:
@@ -150,6 +234,42 @@ def path_deviation(values: np.ndarray, model: ExpectedPathModel) -> PathDeviatio
     cross = np.linalg.norm(cross_vec, axis=1)
     norm = np.linalg.norm(delta, axis=1)
     return PathDeviation(along=along, cross=cross, norm=norm)
+
+
+def _model_is_acceptable(
+    positions: np.ndarray,
+    model: ExpectedPathModel,
+    max_deviation_mm: float,
+) -> bool:
+    stats = _deviation_stats(positions, model)
+    return stats["max_middle"] <= max_deviation_mm
+
+
+def _deviation_stats(positions: np.ndarray, model: ExpectedPathModel) -> dict[str, float]:
+    deviation = path_deviation(positions, model).norm
+    sample_slice = _validation_slice(positions.shape[0], model)
+    middle = deviation[sample_slice]
+    if middle.size == 0:
+        middle = deviation
+    return {
+        "max": float(np.max(deviation)) if deviation.size else 0.0,
+        "p95": float(np.percentile(deviation, 95)) if deviation.size else 0.0,
+        "max_middle": float(np.max(middle)) if middle.size else 0.0,
+        "p95_middle": float(np.percentile(middle, 95)) if middle.size else 0.0,
+    }
+
+
+def _validation_slice(count: int, model: ExpectedPathModel) -> slice:
+    if count <= 2:
+        return slice(0, count)
+    if model.kind == "line-static":
+        start = int(model.details.get("start_static_samples", 0))
+        end_count = int(model.details.get("end_static_samples", 0))
+        stop = count - end_count
+        if stop > start:
+            return slice(start, stop)
+    trim = min(max(1, count // 20), count // 4)
+    return slice(trim, count - trim)
 
 
 def _positions(values: np.ndarray) -> np.ndarray:
@@ -317,6 +437,65 @@ def _polyline_expected(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray, i
     return expected, tangent, len(indices)
 
 
+def _savgol_curve_expected(
+    positions: np.ndarray,
+    max_deviation_mm: float,
+    *,
+    allow_tight: bool = False,
+) -> tuple[np.ndarray, np.ndarray, int, int, float] | None:
+    count = positions.shape[0]
+    if count < 7:
+        return None
+
+    polyorders = (4, 5, 3) if count > 6 else (3,)
+    max_window = min(101, count if count % 2 == 1 else count - 1)
+    min_window = 7 if allow_tight else 21
+    if max_window < min_window:
+        min_window = 7
+
+    candidate_windows = [
+        window
+        for window in range(max_window, min_window - 1, -2)
+        if window >= 5
+    ]
+    best: tuple[np.ndarray, np.ndarray, int, int, float] | None = None
+    for polyorder in polyorders:
+        for window in candidate_windows:
+            if window <= polyorder:
+                continue
+            expected = np.column_stack(
+                [
+                    savgol_filter(positions[:, axis], window, polyorder, mode="interp")
+                    for axis in range(3)
+                ]
+            )
+            deviation = np.linalg.norm(positions - expected, axis=1)
+            max_error = float(np.max(deviation)) if deviation.size else 0.0
+            tangent = _curve_tangent(expected)
+            if best is None or (window > best[2] and max_error <= max_deviation_mm):
+                best = (expected, tangent, window, polyorder, max_error)
+            if max_error <= max_deviation_mm:
+                return expected, tangent, window, polyorder, max_error
+            if best is None or max_error < best[4]:
+                best = (expected, tangent, window, polyorder, max_error)
+
+    if allow_tight and best is not None and best[4] <= max_deviation_mm:
+        return best
+    return None
+
+
+def _curve_tangent(expected: np.ndarray) -> np.ndarray:
+    count = expected.shape[0]
+    if count <= 1:
+        return np.tile(np.array([1.0, 0.0, 0.0], dtype=float), (count, 1))
+    tangent = np.empty_like(expected)
+    tangent[0] = expected[1] - expected[0]
+    tangent[-1] = expected[-1] - expected[-2]
+    if count > 2:
+        tangent[1:-1] = expected[2:] - expected[:-2]
+    return _unit_rows(tangent, fallback=np.array([1.0, 0.0, 0.0]))
+
+
 def _rdp_indices(points: np.ndarray, tolerance: float) -> list[int]:
     count = points.shape[0]
     if count <= 2:
@@ -412,3 +591,81 @@ def _path_length(positions: np.ndarray) -> float:
     if positions.shape[0] < 2:
         return 0.0
     return float(np.sum(np.linalg.norm(np.diff(positions, axis=0), axis=1)))
+
+
+def _expected_path_cache_path(
+    positions: np.ndarray,
+    *,
+    source_path: Path,
+    cache_dir: Path,
+    max_deviation_mm: float,
+) -> Path:
+    source_text = str(source_path.expanduser().resolve())
+    payload = np.ascontiguousarray(positions, dtype=np.float64)
+    digest = hashlib.sha256()
+    digest.update(f"v{EXPECTED_PATH_CACHE_VERSION}|{source_text}|{max_deviation_mm:.12g}|".encode("utf-8"))
+    digest.update(str(payload.shape).encode("utf-8"))
+    digest.update(payload.tobytes())
+    readable = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_path.stem).strip("_") or "trajectory"
+    readable = readable[:80]
+    return cache_dir / f"{readable}__{digest.hexdigest()[:16]}.npz"
+
+
+def _load_expected_path_cache(
+    path: Path,
+    positions: np.ndarray,
+    max_deviation_mm: float,
+) -> ExpectedPathModel | None:
+    if not path.exists():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            metadata = json.loads(str(data["metadata"].item()))
+            if int(metadata.get("version", -1)) != EXPECTED_PATH_CACHE_VERSION:
+                return None
+            if int(metadata.get("sample_count", -1)) != int(positions.shape[0]):
+                return None
+            if float(metadata.get("max_deviation_mm", -1.0)) != float(max_deviation_mm):
+                return None
+            expected = np.asarray(data["expected"], dtype=float)
+            tangent = np.asarray(data["tangent"], dtype=float)
+            if expected.shape != positions.shape or tangent.shape != positions.shape:
+                return None
+            details = metadata.get("details", {})
+            if not isinstance(details, dict):
+                details = {}
+            model = ExpectedPathModel(
+                kind=str(metadata.get("kind", "cached")),
+                expected=expected,
+                tangent=tangent,
+                details=details,
+            )
+            if not _model_is_acceptable(positions, model, max_deviation_mm):
+                return None
+            return model
+    except Exception:
+        return None
+
+
+def _save_expected_path_cache(
+    path: Path,
+    model: ExpectedPathModel,
+    *,
+    source_path: Path,
+    max_deviation_mm: float,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "version": EXPECTED_PATH_CACHE_VERSION,
+        "kind": model.kind,
+        "details": model.details,
+        "sample_count": int(model.expected.shape[0]),
+        "source_path": str(source_path),
+        "max_deviation_mm": float(max_deviation_mm),
+    }
+    np.savez_compressed(
+        path,
+        expected=np.asarray(model.expected, dtype=np.float64),
+        tangent=np.asarray(model.tangent, dtype=np.float64),
+        metadata=np.array(json.dumps(metadata, ensure_ascii=False)),
+    )

@@ -6,6 +6,7 @@ import pytest
 from rt_filter.gui.chart_data import (
     complete_neighbor_slice,
     fit_expected_path,
+    fit_expected_path_cached,
     neighbor_mean_deviation,
     path_deviation,
 )
@@ -136,3 +137,43 @@ def test_expected_path_falls_back_to_polyline_for_cornered_motion():
     assert model.kind == "polyline"
     assert model.details["vertices"] >= 3
     assert float(np.percentile(deviation.cross, 95)) < 1e-9
+
+
+def test_expected_path_uses_high_order_curve_when_simple_models_exceed_threshold():
+    x = np.linspace(0.0, 1000.0, 500)
+    positions = np.column_stack(
+        [
+            x,
+            200.0 * np.sin(2.0 * np.pi * x / 1000.0),
+            np.zeros_like(x),
+        ]
+    )
+
+    model = fit_expected_path(positions)
+    deviation = path_deviation(positions, model)
+
+    assert model.kind == "savgol-curve"
+    assert model.details["max_deviation_mm"] <= 10.0
+    assert float(np.max(deviation.norm)) <= 10.0
+
+
+def test_expected_path_cache_round_trips_successful_fit(tmp_path):
+    x = np.linspace(0.0, 1000.0, 500)
+    positions = np.column_stack(
+        [
+            x,
+            200.0 * np.sin(2.0 * np.pi * x / 1000.0),
+            np.zeros_like(x),
+        ]
+    )
+    source = tmp_path / "case_99.csv"
+    source.write_text("placeholder", encoding="utf-8")
+
+    first = fit_expected_path_cached(positions, source_path=source, cache_dir=tmp_path)
+    cache_files = sorted(tmp_path.glob("case_99__*.npz"))
+    second = fit_expected_path_cached(positions, source_path=source, cache_dir=tmp_path)
+
+    assert len(cache_files) == 1
+    assert second.kind == first.kind
+    np.testing.assert_allclose(second.expected, first.expected)
+    np.testing.assert_allclose(second.tangent, first.tangent)

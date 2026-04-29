@@ -21,7 +21,7 @@ from rt_filter.evaluation import trajectory_metrics
 from rt_filter.filters import available_filters, cpp_demo_available
 from rt_filter.gui.chart_data import (
     complete_neighbor_slice,
-    fit_expected_path,
+    fit_expected_path_cached,
     neighbor_mean_deviation,
     path_deviation,
 )
@@ -414,10 +414,11 @@ class PlotCanvas(FigureCanvas):
         raw: Trajectory,
         results: list[FilterAnalysisResult],
         visible_labels: set[str] | None = None,
+        source_path: str | Path | None = None,
     ) -> None:
         self.figure.clear()
         try:
-            model = fit_expected_path(raw.positions)
+            model = fit_expected_path_cached(raw.positions, source_path=source_path)
         except ValueError as exc:
             self.plot_empty(str(exc))
             return
@@ -757,6 +758,7 @@ class MainWindow(QMainWindow):
         self.resize(1480, 880)
         self.input_paths: list[Path] = []
         self.raw: Trajectory | None = None
+        self.raw_source_path: Path | None = None
         self.reference: Trajectory | None = None
         self.results: list[FilterAnalysisResult] = []
         self.run_dir: Path | None = None
@@ -1026,6 +1028,7 @@ class MainWindow(QMainWindow):
         self.input_paths.clear()
         self.input_table.setRowCount(0)
         self.raw = None
+        self.raw_source_path = None
         self.results.clear()
         self.update_results()
         self._persist_input_state()
@@ -1196,7 +1199,12 @@ class MainWindow(QMainWindow):
         elif mode == "XYZ Neighbor Mean Deviation":
             canvas.plot_neighbor_mean_deviation(self.raw, self.results, visible_labels)
         elif mode == "Expected Path Deviation":
-            canvas.plot_expected_path_deviation(self.raw, self.results, visible_labels)
+            canvas.plot_expected_path_deviation(
+                self.raw,
+                self.results,
+                visible_labels,
+                source_path=self.raw_source_path,
+            )
         elif mode == "Metric Bars":
             canvas.plot_metric_bars(self.results, visible_labels)
         elif mode == "Dimension Jerk Ratios":
@@ -1332,10 +1340,12 @@ class MainWindow(QMainWindow):
         path = self.input_paths[row]
         try:
             self.raw = read_trajectory(path)
+            self.raw_source_path = path
             metrics = trajectory_metrics(self.raw)
         except Exception as exc:
             QMessageBox.critical(self, "Load Failed", str(exc))
             self.raw = None
+            self.raw_source_path = None
             return
         self.detail_text.setPlainText(
             "\n".join(
