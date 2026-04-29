@@ -66,9 +66,10 @@ def test_curve_visibility_toggle_preserves_current_zoom():
             "range_z": 0.1,
             "filtered_range_x": 0.04,
             "filtered_range_y": 0.04,
-            "filtered_range_z": 0.06,
-            "to_raw_translation_rmse": 0.01,
-            "to_raw_translation_max": 0.02,
+                "filtered_range_z": 0.06,
+                "filtered_path_length": 0.1,
+                "to_raw_translation_rmse": 0.01,
+                "to_raw_translation_max": 0.02,
             "jerk_rms_ratio": 0.8,
             "acceleration_rms_ratio": 0.85,
             "compute_mean_us": 1.0,
@@ -95,7 +96,6 @@ def test_curve_visibility_toggle_preserves_current_zoom():
         axes = [ax for ax in window.canvas.figure.axes if ax.axison]
         assert len(axes) == 3
 
-        expected_limits: list[tuple[tuple[float, float], tuple[float, float]]] = []
         for ax in axes:
             x0, x1 = ax.get_xlim()
             y0, y1 = ax.get_ylim()
@@ -107,9 +107,9 @@ def test_curve_visibility_toggle_preserves_current_zoom():
             new_y = (y_center - y_half, y_center + y_half)
             ax.set_xlim(new_x)
             ax.set_ylim(new_y)
-            expected_limits.append((new_x, new_y))
         window.canvas.draw_idle()
         app.processEvents()
+        expected_limits = window.canvas.capture_view_limits()
 
         window._set_curve_visible(result.label, False)
         app.processEvents()
