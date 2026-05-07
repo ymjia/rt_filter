@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,25 @@ from rt_filter.trajectory import Trajectory
 SOURCE_ROOT = Path("ref_data/sn")
 INPUT_ROOT = Path("input/sn")
 TXT_COLUMNS = ["x", "y", "z", "xr", "yr", "zr", "time", "rate"]
+CASE0506_COLUMNS = ["time", "x", "y", "z", "a", "b", "c"]
+MAX_CONTINUOUS_STEP_S = 0.05
 SPECIAL_CASE_FOLDERS = {"\u672c\u5730\u5b9e\u9a8c\u5ba4\u6570\u636e"}
+CASE0506_CASES = [
+    {
+        "case_id": "case_31_dynamic_case0506_scan",
+        "case_label": "dynamic_robot_arm",
+        "source_path": Path("ref_data/case0506_scan.txt"),
+        "variant_id": "case0506_scan",
+        "variant_note": "case0506 scan trajectory",
+    },
+    {
+        "case_id": "case_32_dynamic_case0506_sn",
+        "case_label": "dynamic_robot_arm",
+        "source_path": Path("ref_data/case0506_sn.txt"),
+        "variant_id": "case0506_sn",
+        "variant_note": "case0506 sn trajectory",
+    },
+]
 
 
 @dataclass(frozen=True)
@@ -89,6 +108,11 @@ def prepare_sn_data() -> list[dict[str, Any]]:
                 }
             )
 
+    for case in CASE0506_CASES:
+        source_path = Path(case["source_path"])
+        if source_path.exists():
+            rows.append(_prepare_case0506_case(case))
+
     _write_csv(INPUT_ROOT / "manifest.csv", rows)
     _write_readme()
     return rows
@@ -120,6 +144,145 @@ def _read_sn_track(path: Path, name: str) -> tuple[Trajectory, int]:
         ),
         len(frame),
     )
+
+
+def _prepare_case0506_case(case: dict[str, Any]) -> dict[str, Any]:
+    source_path = Path(case["source_path"])
+    case_id = str(case["case_id"])
+    trajectory_name = f"{case_id}_01_{source_path.stem}"
+    case_dir = INPUT_ROOT / case_id
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    trajectory, raw_row_count, frame = _read_case0506_track(source_path, trajectory_name)
+    input_csv = case_dir / f"{trajectory_name}.csv"
+    metadata_json = case_dir / f"{trajectory_name}_metadata.json"
+    write_trajectory(trajectory, input_csv)
+    metadata = _case0506_metadata(
+        case_id=case_id,
+        trajectory_name=trajectory_name,
+        source_path=source_path,
+        raw_row_count=raw_row_count,
+        frame=frame,
+        trajectory=trajectory,
+    )
+    metadata_json.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {
+        "trajectory": trajectory_name,
+        "case_id": case_id,
+        "case_label": case["case_label"],
+        "source_folder": "ref_data",
+        "source_file": source_path.name,
+        "source_path": str(source_path),
+        "input_csv": str(input_csv),
+        "source_workbook": "",
+        "base": "case0506",
+        "target": "robot_arm_motion",
+        "calibration": "unknown_calibration",
+        "exposure": "default_exposure",
+        "added_points": False,
+        "variant_id": case["variant_id"],
+        "tracker_smoothing": "unknown",
+        "variant_note": case["variant_note"],
+        "sample_count": trajectory.count,
+        "raw_row_count": raw_row_count,
+        "position_unit": "mm",
+        "rotation_source": "a,b,c",
+        "rotation_assumption": "XYZ Euler angles in radians",
+        "timestamp_source": "normalized from source time seconds",
+        "sample_rate_hz": _sample_rate_from_traj(trajectory),
+        "reference_csv": "",
+        "metadata_json": str(metadata_json),
+    }
+
+
+def _read_case0506_track(path: Path, name: str) -> tuple[Trajectory, int, pd.DataFrame]:
+    raw_frame = pd.read_csv(path, sep="\t")
+    raw_row_count = len(raw_frame)
+    missing = [col for col in CASE0506_COLUMNS if col not in raw_frame.columns]
+    if missing:
+        raise ValueError(f"{path} is missing columns: {missing}")
+
+    frame = raw_frame[CASE0506_COLUMNS].apply(pd.to_numeric, errors="coerce").dropna().reset_index(drop=True)
+    if frame.empty:
+        raise ValueError(f"{path} contains no valid numeric trajectory rows")
+
+    positions = frame[["x", "y", "z"]].to_numpy(dtype=float)
+    rotations = Rotation.from_euler("xyz", frame[["a", "b", "c"]].to_numpy(dtype=float), degrees=False)
+    poses = make_poses(positions, rotations)
+    timestamps = _timestamps_from_case0506(frame)
+    return (
+        Trajectory(
+            poses,
+            timestamps=timestamps,
+            name=name,
+            metadata={
+                "source": str(path),
+                "position_unit": "mm",
+                "rotation_assumption": "XYZ Euler angles in radians",
+                "timestamp_source": "normalized from source time seconds",
+            },
+        ),
+        raw_row_count,
+        frame,
+    )
+
+
+def _timestamps_from_case0506(frame: pd.DataFrame) -> np.ndarray:
+    source_timestamps = frame["time"].to_numpy(dtype=float)
+    timestamps = source_timestamps - source_timestamps[0]
+    if len(timestamps) > 1 and np.all(np.diff(timestamps) > 0.0):
+        return timestamps
+
+    valid_dt = np.diff(source_timestamps)
+    valid_dt = valid_dt[valid_dt > 0.0]
+    if valid_dt.size:
+        dt = float(np.median(valid_dt))
+        if np.isfinite(dt) and dt > 0.0:
+            return np.arange(len(frame), dtype=float) * dt
+    return np.arange(len(frame), dtype=float) / 100.0
+
+
+def _case0506_metadata(
+    *,
+    case_id: str,
+    trajectory_name: str,
+    source_path: Path,
+    raw_row_count: int,
+    frame: pd.DataFrame,
+    trajectory: Trajectory,
+) -> dict[str, Any]:
+    positions = trajectory.positions
+    timestamps = trajectory.timestamps
+    assert timestamps is not None
+    dt = np.diff(timestamps)
+    valid_dt = dt[dt > 0.0]
+    euler = frame[["a", "b", "c"]].to_numpy(dtype=float)
+    return {
+        "case_id": case_id,
+        "trajectory": trajectory_name,
+        "source_path": str(source_path),
+        "source_columns": CASE0506_COLUMNS,
+        "raw_row_count": raw_row_count,
+        "sample_count": trajectory.count,
+        "position_unit": "mm",
+        "rotation_source": "a,b,c",
+        "rotation_assumption": "XYZ Euler angles in radians",
+        "timestamp_source": "normalized from source time seconds",
+        "duration_s": float(timestamps[-1] - timestamps[0]) if len(timestamps) > 1 else 0.0,
+        "sample_rate_hz_median": _median_sample_rate(timestamps),
+        "dt_s_min": float(valid_dt.min()) if valid_dt.size else 0.0,
+        "dt_s_median": float(np.median(valid_dt)) if valid_dt.size else 0.0,
+        "dt_s_max": float(valid_dt.max()) if valid_dt.size else 0.0,
+        "position_min_mm": _axis_dict(positions.min(axis=0)),
+        "position_max_mm": _axis_dict(positions.max(axis=0)),
+        "position_range_mm": _axis_dict(np.ptp(positions, axis=0)),
+        "position_std_mm": _axis_dict(positions.std(axis=0, ddof=0)),
+        "euler_min_rad": _axis_dict(euler.min(axis=0), axes=("a", "b", "c")),
+        "euler_max_rad": _axis_dict(euler.max(axis=0), axes=("a", "b", "c")),
+        "euler_range_rad": _axis_dict(np.ptp(euler, axis=0), axes=("a", "b", "c")),
+        "continuous_step_speed_mm_s": _step_speed_stats(positions, timestamps),
+    }
 
 
 def _folder_info(name: str, index: int) -> FolderInfo:
@@ -191,6 +354,34 @@ def _sample_rate_from_traj(traj: Trajectory) -> float:
     return float((traj.count - 1) / duration) if duration > 0 else 0.0
 
 
+def _median_sample_rate(timestamps: np.ndarray | None) -> float:
+    if timestamps is None or len(timestamps) < 2:
+        return 0.0
+    dt = np.diff(timestamps)
+    dt = dt[(dt > 0.0) & (dt <= MAX_CONTINUOUS_STEP_S)]
+    if dt.size == 0:
+        return 0.0
+    return float(1.0 / np.median(dt))
+
+
+def _step_speed_stats(positions: np.ndarray, timestamps: np.ndarray) -> dict[str, float]:
+    dt = np.diff(timestamps)
+    dp = np.diff(positions, axis=0)
+    valid = (dt > 0.0) & (dt <= MAX_CONTINUOUS_STEP_S)
+    if not np.any(valid):
+        return {"median": 0.0, "p95": 0.0, "max": 0.0}
+    speed_norm = np.linalg.norm(dp[valid], axis=1) / dt[valid]
+    return {
+        "median": float(np.median(speed_norm)),
+        "p95": float(np.percentile(speed_norm, 95)),
+        "max": float(np.max(speed_norm)),
+    }
+
+
+def _axis_dict(values: np.ndarray, axes: tuple[str, str, str] = ("x", "y", "z")) -> dict[str, float]:
+    return {axis: float(value) for axis, value in zip(axes, values, strict=True)}
+
+
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
@@ -218,6 +409,11 @@ Source TXT columns:
 
 The folder name is parsed into case metadata such as base, target, calibration,
 exposure, and added-points flags. See `manifest.csv` for the full mapping.
+
+Additional case0506 files are converted from `ref_data/case0506_scan.txt` and
+`ref_data/case0506_sn.txt` into case31 and case32. These source files use
+`time,x,y,z,a,b,c`, where `time` is seconds and `a,b,c` are interpreted as XYZ
+Euler angles in radians.
 """
     (INPUT_ROOT / "README.md").write_text(text, encoding="utf-8")
 
