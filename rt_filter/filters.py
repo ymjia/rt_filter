@@ -127,6 +127,24 @@ CPP_FILTER_SPECS: dict[str, dict[str, Any]] = {
             "delay_frames": 2,
         },
     },
+    "adaptive_local_line_cpp": {
+        "alias": "adaptive_local_line-cpp",
+        "cpp_algorithm": "adaptive_local_line",
+        "result_suffix": "adaptive_local_line_cpp",
+        "description": (
+            "Run the standalone C++ fixed-lag adaptive local-line filter and "
+            "import its trajectory and timing outputs for GUI analysis."
+        ),
+        "defaults": {
+            "window": 5,
+            "target_noise_mm": 0.26,
+            "max_strength": 0.5,
+            "min_strength": 0.0,
+            "response": 1.0,
+            "reference_mode": "global",
+            "sample_rate_hz": 100.0,
+        },
+    },
     "ukf_cpp": {
         "alias": "ukf-cpp",
         "cpp_algorithm": "ukf",
@@ -248,6 +266,23 @@ def available_filters() -> dict[str, FilterInfo]:
                 "sample_rate_hz": 80.0,
             },
         ),
+        "adaptive_local_line": FilterInfo(
+            name="adaptive_local_line",
+            description=(
+                "Fixed-lag adaptive line-constrained translation filter. It preserves "
+                "motion along the fitted line and only attenuates perpendicular jitter, "
+                "with stronger correction in locally noisier windows."
+            ),
+            defaults={
+                "window": 5,
+                "target_noise_mm": 0.26,
+                "max_strength": 0.5,
+                "min_strength": 0.0,
+                "response": 1.0,
+                "reference_mode": "global",
+                "sample_rate_hz": 100.0,
+            },
+        ),
     }
     filters.update(
         {
@@ -287,6 +322,8 @@ def run_filter(
         "butterworth_xyz": butterworth_filter,
         "butterworth_z": butterworth_z_filter,
         "adaptive_kalman_z": adaptive_kalman_z_filter,
+        "adaptive_local_line": adaptive_local_line_filter,
+        "adaptive_line": adaptive_local_line_filter,
     }
     if normalized not in registry:
         known = ", ".join(sorted(available_filters()))
@@ -319,6 +356,8 @@ def run_filter_timed(
         "butterworth_xyz": _run_butterworth_timed,
         "butterworth_z": _run_butterworth_z_timed,
         "adaptive_kalman_z": _run_adaptive_kalman_z_timed,
+        "adaptive_local_line": _run_adaptive_local_line_timed,
+        "adaptive_line": _run_adaptive_local_line_timed,
     }
     if normalized not in registry:
         known = ", ".join(sorted(available_filters()))
@@ -505,6 +544,41 @@ def _cpp_filter_cli_args(cpp_algorithm: str, params: dict[str, Any]) -> list[str
                 _format_cli_scalar(params.get("derivative_deadband", 1.0)),
             ]
         )
+        return command
+
+    if cpp_algorithm == "adaptive_local_line":
+        command.extend(
+            [
+                "--window",
+                _format_cli_scalar(int(params.get("window", 5))),
+                "--target-noise-mm",
+                _format_cli_scalar(params.get("target_noise_mm", 0.26)),
+                "--max-strength",
+                _format_cli_scalar(params.get("max_strength", 0.5)),
+                "--min-strength",
+                _format_cli_scalar(params.get("min_strength", 0.0)),
+                "--response",
+                _format_cli_scalar(params.get("response", 1.0)),
+                "--reference-mode",
+                str(params.get("reference_mode", "global")),
+            ]
+        )
+        if params.get("line_origin") is not None:
+            command.extend(
+                [
+                    "--line-origin",
+                    _format_cli_vector(_validate_vector(params["line_origin"], 3, "line_origin")),
+                ]
+            )
+        if params.get("line_direction") is not None:
+            command.extend(
+                [
+                    "--line-direction",
+                    _format_cli_vector(
+                        _validate_vector(params["line_direction"], 3, "line_direction")
+                    ),
+                ]
+            )
         return command
 
     motion_model = str(params.get("motion_model", "constant_velocity")).lower().replace("-", "_")
@@ -1228,6 +1302,34 @@ def adaptive_kalman_z_filter(
     return result
 
 
+def adaptive_local_line_filter(
+    traj: Trajectory,
+    window: int = 5,
+    target_noise_mm: float = 0.26,
+    max_strength: float = 0.5,
+    min_strength: float = 0.0,
+    response: float = 1.0,
+    reference_mode: str = "global",
+    line_origin: ArrayLike | None = None,
+    line_direction: ArrayLike | None = None,
+    sample_rate_hz: float = 100.0,
+) -> Trajectory:
+    result, _, _ = _adaptive_local_line_filter_impl(
+        traj,
+        window=window,
+        target_noise_mm=target_noise_mm,
+        max_strength=max_strength,
+        min_strength=min_strength,
+        response=response,
+        reference_mode=reference_mode,
+        line_origin=line_origin,
+        line_direction=line_direction,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=False,
+    )
+    return result
+
+
 def butterworth_filter(
     traj: Trajectory,
     cutoff_hz: float = 20.0,
@@ -1386,6 +1488,35 @@ def _run_adaptive_kalman_z_timed(
     return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
 
 
+def _run_adaptive_local_line_timed(
+    traj: Trajectory,
+    window: int = 5,
+    target_noise_mm: float = 0.26,
+    max_strength: float = 0.5,
+    min_strength: float = 0.0,
+    response: float = 1.0,
+    reference_mode: str = "global",
+    line_origin: ArrayLike | None = None,
+    line_direction: ArrayLike | None = None,
+    sample_rate_hz: float = 100.0,
+) -> TimedFilterRun:
+    result, per_pose_time_ns, total_time_ns = _adaptive_local_line_filter_impl(
+        traj,
+        window=window,
+        target_noise_mm=target_noise_mm,
+        max_strength=max_strength,
+        min_strength=min_strength,
+        response=response,
+        reference_mode=reference_mode,
+        line_origin=line_origin,
+        line_direction=line_direction,
+        sample_rate_hz=sample_rate_hz,
+        collect_timing=True,
+    )
+    assert per_pose_time_ns is not None
+    return TimedFilterRun(result, per_pose_time_ns, total_time_ns)
+
+
 def _adaptive_kalman_z_filter_impl(
     traj: Trajectory,
     *,
@@ -1469,6 +1600,287 @@ def _adaptive_kalman_z_filter_impl(
     assert per_pose_time_ns is not None
     total_time_ns = perf_counter_ns() - total_start_ns
     return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
+
+
+def _adaptive_local_line_filter_impl(
+    traj: Trajectory,
+    *,
+    window: int = 5,
+    target_noise_mm: float = 0.26,
+    max_strength: float = 0.5,
+    min_strength: float = 0.0,
+    response: float = 1.0,
+    reference_mode: str = "global",
+    line_origin: ArrayLike | None = None,
+    line_direction: ArrayLike | None = None,
+    sample_rate_hz: float = 100.0,
+    collect_timing: bool,
+) -> tuple[Trajectory, ArrayI | None, int]:
+    """Adaptive fixed-lag translation smoothing constrained to a line.
+
+    The default mode fits one straight reference line to the trajectory and
+    keeps each pose's coordinate along that line unchanged. Only the
+    perpendicular component is attenuated, so constant-velocity motion along a
+    straight path is preserved while sideways/depth jitter is reduced.
+    """
+
+    window = int(window)
+    if window < 3 or window % 2 == 0:
+        raise ValueError("window must be an odd integer >= 3")
+    if (
+        target_noise_mm < 0.0
+        or not 0.0 <= min_strength <= max_strength <= 1.0
+        or response <= 0.0
+        or sample_rate_hz <= 0.0
+    ):
+        raise ValueError(
+            "target_noise_mm must be >= 0; strengths must satisfy "
+            "0 <= min_strength <= max_strength <= 1; response and sample_rate_hz "
+            "must be positive"
+        )
+
+    mode = str(reference_mode).lower().replace("-", "_")
+    if mode not in {"global", "local"}:
+        raise ValueError("reference_mode must be 'global' or 'local'")
+
+    total_start_ns = perf_counter_ns() if collect_timing else 0
+    positions = traj.positions.copy()
+    output = positions.copy()
+    count = traj.count
+    per_pose_time_ns = np.zeros(count, dtype=np.int64) if collect_timing else None
+    half = window // 2
+    strengths = np.zeros(count, dtype=float)
+    local_noise = np.zeros(count, dtype=float)
+
+    if count < window:
+        result = traj.copy_with(
+            poses=make_poses(output, traj.rotations),
+            name=f"{traj.name}__adaptive_local_line",
+            metadata={
+                "filter": "adaptive_local_line",
+                "params": _adaptive_local_line_metadata_params(
+                    window=window,
+                    target_noise_mm=target_noise_mm,
+                    max_strength=max_strength,
+                    min_strength=min_strength,
+                    response=response,
+                    reference_mode=mode,
+                    line_origin=None,
+                    line_direction=None,
+                    sample_rate_hz=sample_rate_hz,
+                ),
+                "warning": "trajectory shorter than window; returned unchanged",
+            },
+        )
+        if not collect_timing:
+            return result, None, 0
+        total_time_ns = perf_counter_ns() - total_start_ns
+        return result, _uniform_time_series(count, total_time_ns), total_time_ns
+
+    global_origin: ArrayF | None = None
+    global_direction: ArrayF | None = None
+    global_distances: ArrayF | None = None
+    global_perp: ArrayF | None = None
+    if mode == "global":
+        global_origin, global_direction = _reference_line(
+            positions,
+            line_origin=line_origin,
+            line_direction=line_direction,
+        )
+        centered = positions - global_origin
+        along = centered @ global_direction
+        global_perp = centered - np.outer(along, global_direction)
+        global_distances = np.linalg.norm(global_perp, axis=1)
+
+    timestamps = _trajectory_time_values(traj.timestamps, count, sample_rate_hz)
+    for center in range(count):
+        step_start_ns = perf_counter_ns() if per_pose_time_ns is not None else 0
+        start = center - half
+        stop = center + half + 1
+        if start < 0 or stop > count:
+            if per_pose_time_ns is not None:
+                per_pose_time_ns[center] += perf_counter_ns() - step_start_ns
+            continue
+
+        if mode == "global":
+            assert global_direction is not None
+            assert global_distances is not None
+            assert global_perp is not None
+            local_noise[center] = float(np.sqrt(np.mean(global_distances[start:stop] ** 2)))
+            strength = _adaptive_line_strength(
+                local_noise[center],
+                target_noise_mm=target_noise_mm,
+                min_strength=min_strength,
+                max_strength=max_strength,
+                response=response,
+            )
+            output[center] = positions[center] - strength * global_perp[center]
+        else:
+            center_perp, noise = _local_line_center_residual(
+                positions[start:stop],
+                timestamps[start:stop] - timestamps[center],
+                center_index=half,
+            )
+            local_noise[center] = noise
+            strength = _adaptive_line_strength(
+                noise,
+                target_noise_mm=target_noise_mm,
+                min_strength=min_strength,
+                max_strength=max_strength,
+                response=response,
+            )
+            output[center] = positions[center] - strength * center_perp
+
+        strengths[center] = strength
+        if per_pose_time_ns is not None:
+            per_pose_time_ns[center] += perf_counter_ns() - step_start_ns
+
+    result = traj.copy_with(
+        poses=make_poses(output, traj.rotations),
+        name=f"{traj.name}__adaptive_local_line",
+        metadata={
+            "filter": "adaptive_local_line",
+            "params": _adaptive_local_line_metadata_params(
+                window=window,
+                target_noise_mm=target_noise_mm,
+                max_strength=max_strength,
+                min_strength=min_strength,
+                response=response,
+                reference_mode=mode,
+                line_origin=global_origin,
+                line_direction=global_direction,
+                sample_rate_hz=sample_rate_hz,
+            ),
+            "strength_mean": float(np.mean(strengths)),
+            "strength_p95": float(np.percentile(strengths, 95)),
+            "local_noise_rms_mean_mm": float(np.mean(local_noise)),
+            "edge_mode": "raw",
+            "delay_frames": half,
+        },
+    )
+    if not collect_timing:
+        return result, None, 0
+    assert per_pose_time_ns is not None
+    total_time_ns = perf_counter_ns() - total_start_ns
+    return result, _finalize_time_series(per_pose_time_ns, total_time_ns), total_time_ns
+
+
+def _adaptive_line_strength(
+    noise_mm: float,
+    *,
+    target_noise_mm: float,
+    min_strength: float,
+    max_strength: float,
+    response: float,
+) -> float:
+    if noise_mm <= target_noise_mm or noise_mm <= 0.0:
+        return 0.0
+    raw_strength = 1.0 - (target_noise_mm / noise_mm) ** response if target_noise_mm > 0.0 else 1.0
+    return float(np.clip(raw_strength, min_strength, max_strength))
+
+
+def _reference_line(
+    positions: ArrayF,
+    *,
+    line_origin: ArrayLike | None,
+    line_direction: ArrayLike | None,
+) -> tuple[ArrayF, ArrayF]:
+    if line_direction is not None:
+        direction = _normalize_line_direction(line_direction)
+        origin = (
+            np.mean(positions, axis=0)
+            if line_origin is None
+            else _validate_vector(line_origin, 3, "line_origin")
+        )
+        return origin.astype(float, copy=False), direction
+
+    if line_origin is not None:
+        raise ValueError("line_origin requires line_direction")
+    return _fit_principal_line(positions)
+
+
+def _fit_principal_line(positions: ArrayF) -> tuple[ArrayF, ArrayF]:
+    origin = np.mean(positions, axis=0)
+    centered = positions - origin
+    if np.allclose(centered, 0.0):
+        return origin, np.array([1.0, 0.0, 0.0], dtype=float)
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    direction = vh[0].astype(float, copy=False)
+    if direction[0] < 0.0:
+        direction = -direction
+    return origin, direction
+
+
+def _normalize_line_direction(values: ArrayLike) -> ArrayF:
+    direction = _validate_vector(values, 3, "line_direction")
+    norm = float(np.linalg.norm(direction))
+    if norm <= 0.0:
+        raise ValueError("line_direction must be non-zero")
+    return direction / norm
+
+
+def _trajectory_time_values(
+    timestamps: ArrayLike | None,
+    count: int,
+    sample_rate_hz: float,
+) -> ArrayF:
+    if timestamps is None:
+        return np.arange(count, dtype=float) / sample_rate_hz
+    values = np.asarray(timestamps, dtype=float)
+    if values.ndim != 1 or values.shape[0] != count:
+        raise ValueError("timestamps must be a 1-D array with the same length as poses")
+    if count > 1 and np.any(np.diff(values) <= 0.0):
+        raise ValueError("timestamps must be strictly increasing")
+    return values
+
+
+def _local_line_center_residual(
+    positions: ArrayF,
+    relative_times: ArrayF,
+    *,
+    center_index: int,
+) -> tuple[ArrayF, float]:
+    design = np.column_stack([np.ones(relative_times.shape[0], dtype=float), relative_times])
+    coefficients, *_ = np.linalg.lstsq(design, positions, rcond=None)
+    model = design @ coefficients
+    velocity = coefficients[1]
+    speed = float(np.linalg.norm(velocity))
+    if speed > 0.0:
+        direction = velocity / speed
+    else:
+        _, direction = _fit_principal_line(positions)
+
+    residuals = positions - model
+    along = residuals @ direction
+    perp = residuals - np.outer(along, direction)
+    center_perp = perp[center_index]
+    noise = float(np.sqrt(np.mean(np.sum(perp * perp, axis=1))))
+    return center_perp, noise
+
+
+def _adaptive_local_line_metadata_params(
+    *,
+    window: int,
+    target_noise_mm: float,
+    max_strength: float,
+    min_strength: float,
+    response: float,
+    reference_mode: str,
+    line_origin: ArrayF | None,
+    line_direction: ArrayF | None,
+    sample_rate_hz: float,
+) -> dict[str, Any]:
+    return {
+        "window": window,
+        "target_noise_mm": target_noise_mm,
+        "max_strength": max_strength,
+        "min_strength": min_strength,
+        "response": response,
+        "reference_mode": reference_mode,
+        "line_origin": None if line_origin is None else line_origin.tolist(),
+        "line_direction": None if line_direction is None else line_direction.tolist(),
+        "sample_rate_hz": sample_rate_hz,
+    }
 
 
 def _moving_average(values: ArrayLike, window: int) -> ArrayF:

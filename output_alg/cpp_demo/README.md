@@ -1,8 +1,8 @@
 # C++ Filter Demo
 
 This demo builds the standalone C++ `butterworth`, `butterworth_z`,
-`one_euro_z`, and `ukf` filters and runs them on a trajectory CSV. The output
-CSV uses the same columns as the Python framework
+`one_euro_z`, `adaptive_local_line`, and `ukf` filters and runs them on a
+trajectory CSV. The output CSV uses the same columns as the Python framework
 (`timestamp,x,y,z,qw,qx,qy,qz,m00..m33`), so it can be read by
 `rt_filter.io.read_trajectory` and evaluated with the current tools.
 
@@ -157,6 +157,19 @@ build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
   --output outputs/cpp_demo/case11_butterworth.csv \
   --cutoff-hz 30.0 \
   --order 2
+```
+
+`adaptive_local_line` example:
+
+```bash
+build/cpp_demo/macos-xcode/Release/rt_filter_cpp_demo \
+  --algorithm adaptive_local_line \
+  --input input/sn/case_31_dynamic_case0507_sn/case_31_dynamic_case0507_sn_01_0507_sn.csv \
+  --output outputs/cpp_demo/0507_sn_adaptive_local_line_cpp.csv \
+  --window 5 \
+  --target-noise-mm 0.26 \
+  --max-strength 0.5 \
+  --reference-mode global
 ```
 
 ## Evaluate Output

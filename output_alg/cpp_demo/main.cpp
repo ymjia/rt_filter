@@ -22,6 +22,7 @@
 
 #include <Eigen/Geometry>
 
+#include "adaptive_local_line.hpp"
 #include "butterworth.hpp"
 #include "one_euro_z.hpp"
 #include "ukf.hpp"
@@ -48,6 +49,7 @@ struct Options {
     output_alg::ButterworthParameters butterworth;
     output_alg::OneEuroZParameters one_euro;
     output_alg::UkfParameters ukf;
+    output_alg::AdaptiveLocalLineParameters adaptive_local_line;
 };
 
 std::string DefaultOutputForAlgorithm(const std::string& algorithm) {
@@ -59,6 +61,9 @@ std::string DefaultOutputForAlgorithm(const std::string& algorithm) {
     }
     if (algorithm == "one_euro_z") {
         return "outputs/cpp_demo/noisy_line_one_euro_z.csv";
+    }
+    if (algorithm == "adaptive_local_line") {
+        return "outputs/cpp_demo/noisy_line_adaptive_local_line.csv";
     }
     return "outputs/cpp_demo/noisy_line_ukf.csv";
 }
@@ -107,6 +112,18 @@ Options DefaultOptions() {
     options.ukf.sample_rate_hz = 100.0;
     options.ukf.history_size = 0;
     options.ukf.strict_timestamps = false;
+
+    // Adaptive Local Line：5 帧窗口、2 帧固定延迟。沿直线方向保持原始坐标，
+    // 只按局部垂直跳动自适应削弱线外残差。默认参数按 0507_sn/scan 的 mm 量级整定。
+    options.adaptive_local_line.window = 5;
+    options.adaptive_local_line.target_noise_mm = 0.26;
+    options.adaptive_local_line.max_strength = 0.5;
+    options.adaptive_local_line.min_strength = 0.0;
+    options.adaptive_local_line.response = 1.0;
+    options.adaptive_local_line.reference_mode = "global";
+    options.adaptive_local_line.sample_rate_hz = 100.0;
+    options.adaptive_local_line.strict_timestamps = false;
+    options.adaptive_local_line.history_size = 0;
 
     return options;
 }
@@ -289,7 +306,7 @@ std::array<double, 6> ParseVector6(const std::string& value, const std::string& 
 void PrintUsage() {
     std::cerr
         << "usage: rt_filter_cpp_demo --input in.csv --output out.csv "
-        << "--algorithm butterworth|butterworth_z|one_euro_z|ukf [params]\n\n"
+        << "--algorithm butterworth|butterworth_z|one_euro_z|adaptive_local_line|ukf [params]\n\n"
         << "Defaults when no arguments are supplied:\n"
         << "  --input examples/demo_data/noisy_line.csv\n"
         << "  --algorithm ukf\n"
@@ -301,7 +318,10 @@ void PrintUsage() {
         << "  --min-cutoff 1.0 --beta 10.0 --d-cutoff 8.0 --derivative-deadband 0.02 --delay-frames 0\n"
         << "UKF params:\n"
         << "  --motion-model constant_velocity --process-noise 1000 --measurement-noise 0.001\n"
-        << "  --initial-linear-velocity vx,vy,vz --initial-angular-velocity wx,wy,wz\n";
+        << "  --initial-linear-velocity vx,vy,vz --initial-angular-velocity wx,wy,wz\n"
+        << "Adaptive Local Line params:\n"
+        << "  --window 5 --target-noise-mm 0.26 --max-strength 0.5 --reference-mode global\n"
+        << "  --line-origin x,y,z --line-direction dx,dy,dz\n";
 }
 
 Options ParseOptions(int argc, char** argv) {
@@ -332,11 +352,13 @@ Options ParseOptions(int argc, char** argv) {
             options.butterworth.sample_rate_hz = value;
             options.one_euro.sample_rate_hz = value;
             options.ukf.sample_rate_hz = value;
+            options.adaptive_local_line.sample_rate_hz = value;
         } else if (key == "--strict-timestamps") {
             // 默认情况下，异常时间戳会退回到固定采样率；开启 strict 后会直接报错。
             options.butterworth.strict_timestamps = true;
             options.one_euro.strict_timestamps = true;
             options.ukf.strict_timestamps = true;
+            options.adaptive_local_line.strict_timestamps = true;
         } else if (key == "--delay-frames") {
             const int value = ParseInt(require_value(), key);
             if (value < 0) {
@@ -391,6 +413,32 @@ Options ParseOptions(int argc, char** argv) {
         } else if (key == "--initial-angular-velocity") {
             // UKF：拆分形式的初始角速度 [wx,wy,wz]，单位 rad/s。
             options.ukf.initial_angular_velocity = ParseVector3(require_value(), key);
+        } else if (key == "--window") {
+            const int value = ParseInt(require_value(), key);
+            if (value < 0) {
+                throw std::invalid_argument("--window must be positive");
+            }
+            options.adaptive_local_line.window = static_cast<std::size_t>(value);
+        } else if (key == "--target-noise-mm") {
+            options.adaptive_local_line.target_noise_mm = ParseDouble(require_value(), key);
+        } else if (key == "--max-strength") {
+            options.adaptive_local_line.max_strength = ParseDouble(require_value(), key);
+        } else if (key == "--min-strength") {
+            options.adaptive_local_line.min_strength = ParseDouble(require_value(), key);
+        } else if (key == "--response") {
+            options.adaptive_local_line.response = ParseDouble(require_value(), key);
+        } else if (key == "--reference-mode") {
+            options.adaptive_local_line.reference_mode = Lower(require_value());
+        } else if (key == "--line-origin") {
+            const auto value = ParseVector3(require_value(), key);
+            options.adaptive_local_line.line_origin =
+                Eigen::Vector3d(value[0], value[1], value[2]);
+            options.adaptive_local_line.use_line_origin = true;
+        } else if (key == "--line-direction") {
+            const auto value = ParseVector3(require_value(), key);
+            options.adaptive_local_line.line_direction =
+                Eigen::Vector3d(value[0], value[1], value[2]);
+            options.adaptive_local_line.use_line_direction = true;
         } else {
             throw std::invalid_argument("unknown option: " + key);
         }
@@ -400,9 +448,10 @@ Options ParseOptions(int argc, char** argv) {
         options.algorithm != "butterworth" &&
         options.algorithm != "butterworth_z" &&
         options.algorithm != "one_euro_z" &&
+        options.algorithm != "adaptive_local_line" &&
         options.algorithm != "ukf") {
         throw std::invalid_argument(
-            "--algorithm must be butterworth, butterworth_z, one_euro_z, or ukf");
+            "--algorithm must be butterworth, butterworth_z, one_euro_z, adaptive_local_line, or ukf");
     }
     if (!output_provided) {
         options.output = DefaultOutputForAlgorithm(options.algorithm);
@@ -692,6 +741,11 @@ output_alg::TimedFilterTrajectoryResult RunRealtimeFrameFilterTimed(
 
     if (options.algorithm == "one_euro_z") {
         output_alg::OneEuroZRealtimeFilter filter(options.one_euro);
+        return filter.FilterTrajectoryTimed(trajectory.rigids, timestamps, true);
+    }
+
+    if (options.algorithm == "adaptive_local_line") {
+        output_alg::AdaptiveLocalLineRealtimeFilter filter(options.adaptive_local_line);
         return filter.FilterTrajectoryTimed(trajectory.rigids, timestamps, true);
     }
 

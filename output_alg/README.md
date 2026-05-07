@@ -8,6 +8,8 @@ Available filters:
 - `butterworth`: XYZ realtime causal Butterworth low-pass filtering.
 - `butterworth_z`: Z-only realtime causal Butterworth low-pass filtering.
 - `one_euro_z`: Z-only One Euro adaptive low-pass filtering.
+- `adaptive_local_line`: Fixed-lag line-constrained filtering that preserves
+  along-line motion and adaptively attenuates perpendicular jitter.
 - `ukf`: 6D pose Unscented Kalman filtering with constant-velocity or
   constant-acceleration motion prediction.
 
@@ -148,6 +150,50 @@ Build C++ object files:
 g++ -std=c++14 -Ioutput_alg -c output_alg/butterworth.cpp -o build/butterworth.o
 ```
 
+## Adaptive Local Line Realtime Filter
+
+`AdaptiveLocalLineRealtimeFilter` is intended for straight-line motion. It
+keeps the input rotation unchanged, preserves each point's coordinate along the
+reference line, and attenuates only the perpendicular residual. The attenuation
+strength is computed from a local odd-sized window, so noisier local regions are
+pulled toward the line more strongly while quieter regions are left closer to
+raw input.
+
+Key parameters:
+
+| parameter | effect |
+| --- | --- |
+| `window` | Odd local window size. `5` gives a 2-frame fixed lag. |
+| `target_noise_mm` | Perpendicular RMS below this level is left unchanged. |
+| `max_strength` | Upper bound for how much of the perpendicular residual is removed. |
+| `min_strength` | Lower bound used once local noise exceeds the target. |
+| `response` | Shape of the noise-to-strength curve. |
+| `reference_mode` | `global` fits/uses one reference line; `local` fits each window. |
+| `line_origin` | Optional known line origin, used with `line_direction`. |
+| `line_direction` | Optional known line direction for realtime use. |
+| `sample_rate_hz` | Used when frame timestamps are not supplied. |
+
+C++ usage:
+
+```cpp
+#include "adaptive_local_line.hpp"
+#include "RigidMatrix.h"
+
+output_alg::AdaptiveLocalLineParameters params;
+params.window = 5;
+params.target_noise_mm = 0.26;
+params.max_strength = 0.5;
+params.reference_mode = "global";
+params.use_line_direction = true;
+params.line_origin = Eigen::Vector3d(0.0, 0.0, 0.0);
+params.line_direction = Eigen::Vector3d(1.0, 0.0, 0.0);
+
+output_alg::AdaptiveLocalLineRealtimeFilter filter(params);
+Sn3DAlgorithm::RigidMatrix display_pose = filter.Update(current_rigid, current_time_s);
+std::vector<Sn3DAlgorithm::RigidMatrix> filtered =
+    filter.FilterTrajectory(rigids, &timestamps);
+```
+
 ## UKF Realtime Filter
 
 The Python UKF accepts homogeneous 4x4 poses. The C++ UKF accepts
@@ -213,6 +259,7 @@ helper mutates the input position and Euler vectors with the filtered result.
 ## C++ Demo
 
 `output_alg/cpp_demo` contains a CMake + Conan demo executable that reads a
-trajectory CSV, runs `butterworth`, `butterworth_z`, `one_euro_z`, or `ukf`,
-and writes a CSV that can be evaluated by the existing Python framework. See
-`output_alg/cpp_demo/README.md` for build and run commands.
+trajectory CSV, runs `butterworth`, `butterworth_z`, `one_euro_z`,
+`adaptive_local_line`, or `ukf`, and writes a CSV that can be evaluated by the
+existing Python framework. See `output_alg/cpp_demo/README.md` for build and
+run commands.

@@ -144,6 +144,8 @@ def _is_vector_parameter(key: str, value: list[Any]) -> bool:
         "initial_linear_velocity": 3,
         "initial_angular_velocity": 3,
         "initial_velocity": 6,
+        "line_origin": 3,
+        "line_direction": 3,
     }
     expected = vector_lengths.get(key)
     if expected is None or len(value) != expected:

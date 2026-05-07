@@ -1522,6 +1522,17 @@ class MainWindow(QMainWindow):
                             "delay_frames": 2,
                         },
                     ),
+                    (
+                        "adaptive_local_line-cpp",
+                        {
+                            "window": 5,
+                            "target_noise_mm": 0.26,
+                            "max_strength": 0.5,
+                            "min_strength": 0.0,
+                            "response": 1.0,
+                            "reference_mode": "global",
+                        },
+                    ),
                 ]
             )
         return presets
@@ -1531,13 +1542,15 @@ class MainWindow(QMainWindow):
             return (
                 "C++ filters are ready in this GUI session: "
                 "`butterworth-cpp`, `butterworth_z-cpp`, `butterworth_z-window5-cpp`, "
-                "`ukf-cpp`, `one_euro_z-cpp`, and `one_euro_z-window5-cpp` can be "
+                "`ukf-cpp`, `one_euro_z-cpp`, `one_euro_z-window5-cpp`, and "
+                "`adaptive_local_line-cpp` can be "
                 "checked directly."
             )
         return (
             "C++ filters are not available yet. Build `rt_filter_cpp_demo` first, then "
             "`butterworth-cpp`, `butterworth_z-cpp`, `butterworth_z-window5-cpp`, "
-            "`ukf-cpp`, `one_euro_z-cpp`, and `one_euro_z-window5-cpp` will appear "
+            "`ukf-cpp`, `one_euro_z-cpp`, `one_euro_z-window5-cpp`, and "
+            "`adaptive_local_line-cpp` will appear "
             "in the presets and algorithm list."
         )
 

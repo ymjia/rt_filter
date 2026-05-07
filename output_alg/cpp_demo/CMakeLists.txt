@@ -10,6 +10,8 @@ endif()
 find_package(Eigen3 REQUIRED)
 
 add_library(output_alg_filters
+    ../adaptive_local_line.cpp
+    ../adaptive_local_line.hpp
     ../butterworth.cpp
     ../butterworth.hpp
     ../filter_timing.hpp
@@ -33,6 +35,8 @@ source_group(
     TREE ${CMAKE_CURRENT_LIST_DIR}/..
     FILES
         ../filter_timing.hpp
+        ../adaptive_local_line.cpp
+        ../adaptive_local_line.hpp
         ../butterworth.cpp
         ../butterworth.hpp
         ../one_euro_z.cpp

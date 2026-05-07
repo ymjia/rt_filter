@@ -65,8 +65,9 @@ rt-filter catalog
 | `one_euro` | `min_cutoff`, `beta`, `d_cutoff`, `derivative_deadband`, `sample_rate_hz` | X/Y/Z 方向 One Euro 自适应低通；旋转保持原样 | 需要在线实时，且三轴平移都想做一致的轻量平滑 | 因果滤波会有滞后；`min_cutoff` 太低会压掉三轴局部峰值 |
 | `one_euro_z` | `min_cutoff`, `beta`, `d_cutoff`, `derivative_deadband`, `sample_rate_hz` | Z 方向 One Euro 自适应低通；只改 Z，保留 X/Y 和姿态 | Z 噪声明显大于 X/Y、需要在线实时且减少拖影的静止或慢速转向场景 | 只处理 Z 随机噪声；`min_cutoff` 太低或 `derivative_deadband` 太大仍会产生滞后 |
 | `adaptive_kalman_z` | `process_noise`, `measurement_noise`, `initial_covariance`, `motion_process_gain`, `velocity_deadband`, `innovation_scale`, `innovation_gate`, `max_measurement_scale`, `sample_rate_hz` | Z 方向自适应标量 Kalman；只改 Z，带创新门控与可选速度自适应 | 当前默认更偏静态场景；适合 Z 噪声明显更大、且希望比 One Euro 更强抑制慢漂和偶发尖峰的场景 | 静态默认参数在真实动态轨迹上可能过强；拿到真实动态数据后需要重新整定 |
+| `adaptive_local_line` | `window`, `target_noise_mm`, `max_strength`, `reference_mode`, `line_origin`, `line_direction` | 固定延迟局部窗口的直线约束滤波；保留沿直线运动，只按局部垂直跳动自适应削弱线外残差 | 直线运动、已知或可拟合运动直线，希望 5 帧延迟内把线外跳动压到目标量级 | 默认 `global` 参考线是离线拟合；实时使用时应传入外部已知的 `line_origin` 和 `line_direction` |
 
-如果已经通过 `python3 scripts/build_cpp_demo.py` 构建了独立 C++ demo，GUI 和分析链路里还会出现 `butterworth-cpp`、`butterworth_z-cpp`、`ukf-cpp` 与 `one_euro_z-cpp`。这些条目会由 Python 调用 `rt_filter_cpp_demo` 可执行程序，并直接导入该程序写出的轨迹结果与每帧耗时数据。
+如果已经通过 `python3 scripts/build_cpp_demo.py` 构建了独立 C++ demo，GUI 和分析链路里还会出现 `butterworth-cpp`、`butterworth_z-cpp`、`ukf-cpp`、`one_euro_z-cpp` 与 `adaptive_local_line-cpp`。这些条目会由 Python 调用 `rt_filter_cpp_demo` 可执行程序，并直接导入该程序写出的轨迹结果与每帧耗时数据。
 
 ### `moving_average`
 
@@ -310,6 +311,33 @@ params:
 ```
 
 工程判断：如果你的当前目标是“先把静态 Z 微小噪声压到很低”，这个滤波器通常会比 `one_euro_z` 更激进；但默认参数是按静态数据整定的，等拿到真实动态轨迹后，优先重新调 `process_noise`、`motion_process_gain` 和 `measurement_noise`。
+
+### `adaptive_local_line`
+
+`adaptive_local_line` 用于直线运动场景：先得到一条参考直线，然后把每帧位置分解成沿直线方向和垂直直线方向。滤波时沿线方向保持原始坐标，避免直线运动精度被滞后影响；垂直方向根据最新 5 帧窗口内的线外跳动自动决定压制强度。局部跳动越大，越往参考线拉；局部跳动低于 `target_noise_mm` 时保持原样。
+
+默认参数按 `0507_sn` / `0507_scan` 的毫米量级设置：
+
+```yaml
+name: adaptive_local_line
+params:
+  window: 5
+  target_noise_mm: 0.26
+  max_strength: 0.5
+  reference_mode: global
+```
+
+如果实时链路里已经知道机械臂直线路径，应传入外部直线，避免用全轨迹离线拟合：
+
+```yaml
+name: adaptive_local_line
+params:
+  window: 5
+  target_noise_mm: 0.26
+  max_strength: 0.5
+  line_origin: [0.0, 0.0, 0.0]
+  line_direction: [1.0, 0.0, 0.0]
+```
 
 ### 选择建议
 

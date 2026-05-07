@@ -237,10 +237,12 @@ def test_gui_cpp_status_and_presets_include_butterworth_cpp(monkeypatch: pytest.
     assert "ukf-cpp" in preset_names
     assert "one_euro_z-cpp" in preset_names
     assert "one_euro_z-window5-cpp" in preset_names
+    assert "adaptive_local_line-cpp" in preset_names
     assert "butterworth-cpp" in status_text
     assert "butterworth_z-cpp" in status_text
     assert "butterworth_z-window5-cpp" in status_text
     assert "one_euro_z-window5-cpp" in status_text
+    assert "adaptive_local_line-cpp" in status_text
 
 
 def test_gui_one_euro_z_cpp_preset_uses_tuned_defaults(monkeypatch: pytest.MonkeyPatch):
@@ -287,6 +289,14 @@ def test_gui_window5_cpp_presets_use_delay_frames(monkeypatch: pytest.MonkeyPatc
         "d_cutoff": 8.0,
         "derivative_deadband": 0.02,
         "delay_frames": 2,
+    }
+    assert presets["adaptive_local_line-cpp"] == {
+        "window": 5,
+        "target_noise_mm": 0.26,
+        "max_strength": 0.5,
+        "min_strength": 0.0,
+        "response": 1.0,
+        "reference_mode": "global",
     }
 
 

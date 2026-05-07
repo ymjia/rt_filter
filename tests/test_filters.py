@@ -102,6 +102,7 @@ def test_all_filters_keep_shape():
         ("one_euro_z", {"min_cutoff": 0.7, "beta": 4.0, "d_cutoff": 1.0}),
         ("butterworth", {"cutoff_hz": 20.0, "order": 2}),
         ("butterworth_z", {"cutoff_hz": 20.0, "order": 2}),
+        ("adaptive_local_line", {"window": 5, "target_noise_mm": 0.08, "max_strength": 0.5}),
         (
             "adaptive_kalman_z",
             {
@@ -130,6 +131,7 @@ def test_cpp_filters_are_listed():
     assert "butterworth_z-window5-cpp" in filters
     assert "one_euro_z-cpp" in filters
     assert "one_euro_z-window5-cpp" in filters
+    assert "adaptive_local_line-cpp" in filters
     assert "ukf-cpp" in filters
 
 
@@ -166,6 +168,19 @@ def test_butterworth_z_window5_cpp_defaults_match_tuned_cpp_parameters():
     }
 
 
+def test_adaptive_local_line_cpp_defaults_match_tuned_cpp_parameters():
+    defaults = available_filters()["adaptive_local_line-cpp"].defaults
+    assert defaults == {
+        "window": 5,
+        "target_noise_mm": 0.26,
+        "max_strength": 0.5,
+        "min_strength": 0.0,
+        "response": 1.0,
+        "reference_mode": "global",
+        "sample_rate_hz": 100.0,
+    }
+
+
 def test_one_euro_defaults_match_tuned_python_parameters():
     defaults = available_filters()["one_euro"].defaults
     assert defaults == {
@@ -184,6 +199,19 @@ def test_one_euro_z_defaults_match_tuned_python_parameters():
         "beta": 10.0,
         "d_cutoff": 8.0,
         "derivative_deadband": 0.02,
+        "sample_rate_hz": 100.0,
+    }
+
+
+def test_adaptive_local_line_defaults_match_0507_tuned_parameters():
+    defaults = available_filters()["adaptive_local_line"].defaults
+    assert defaults == {
+        "window": 5,
+        "target_noise_mm": 0.26,
+        "max_strength": 0.5,
+        "min_strength": 0.0,
+        "response": 1.0,
+        "reference_mode": "global",
         "sample_rate_hz": 100.0,
     }
 
@@ -361,6 +389,37 @@ def test_adaptive_kalman_z_is_robust_to_single_z_spike():
     assert spike_filtered < spike_raw * 0.2
 
 
+def test_adaptive_local_line_reduces_perpendicular_jitter_without_along_lag():
+    rng = np.random.default_rng(23)
+    count = 300
+    timestamps = np.arange(count, dtype=float) / 100.0
+    positions = np.zeros((count, 3), dtype=float)
+    positions[:, 0] = 250.0 * timestamps
+    clean_perp = 0.20 * np.sin(2.0 * np.pi * 1.4 * timestamps)
+    jitter = rng.normal(scale=0.16, size=count)
+    positions[:, 1] = clean_perp + jitter
+    rotations = Rotation.identity(count)
+    traj = Trajectory(make_poses(positions, rotations), timestamps=timestamps, name="line")
+
+    filtered = run_filter(
+        "adaptive_local_line",
+        traj,
+        {
+            "window": 5,
+            "target_noise_mm": 0.12,
+            "max_strength": 0.5,
+            "line_origin": [0.0, 0.0, 0.0],
+            "line_direction": [1.0, 0.0, 0.0],
+        },
+    )
+
+    np.testing.assert_allclose(filtered.positions[:, 0], traj.positions[:, 0])
+    np.testing.assert_allclose(filtered.positions[:, 2], traj.positions[:, 2])
+    np.testing.assert_allclose(filtered.rotations.as_matrix(), traj.rotations.as_matrix())
+    assert np.std(filtered.positions[:, 1], ddof=0) < np.std(traj.positions[:, 1], ddof=0)
+    assert np.std(filtered.positions[:, 1], ddof=0) > np.std(traj.positions[:, 1], ddof=0) * 0.45
+
+
 def test_ukf_reduces_static_acceleration():
     traj = _noisy_static()
 
@@ -431,6 +490,10 @@ def test_ukf_rejects_invalid_initial_velocity_shape():
         (
             "one_euro_z-window5-cpp",
             {"min_cutoff": 0.02, "beta": 6.0, "d_cutoff": 2.0, "derivative_deadband": 1.0, "delay_frames": 2},
+        ),
+        (
+            "adaptive_local_line-cpp",
+            {"window": 5, "target_noise_mm": 0.08, "max_strength": 0.5, "reference_mode": "global"},
         ),
         (
             "ukf_cpp",
